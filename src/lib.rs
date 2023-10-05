@@ -16,13 +16,13 @@
 #![deny(clippy::manual_let_else)]
 #![allow(clippy::unreachable)]
 
-mod soft;
+pub mod soft;
 // mod tpm;
 // future goal ... once I can afford one ...
 // mod yubihsm;
 
 #[derive(Debug, Clone)]
-enum HSMError {
+enum HsmError {
     Aes256GcmConfig,
     Aes256GcmEncrypt,
     Aes256GcmDecrypt,
@@ -32,30 +32,30 @@ enum HSMError {
     Entropy,
 }
 
-trait HSM {
+trait Hsm {
     type MachineKey;
     type LoadableMachineKey;
 
     type HmacKey;
     type LoadableHmacKey;
 
-    fn machine_key_create(&mut self) -> Result<Self::LoadableMachineKey, HSMError>;
+    fn machine_key_create(&mut self) -> Result<Self::LoadableMachineKey, HsmError>;
 
     fn machine_key_load(
         &mut self,
         exported_key: &Self::LoadableMachineKey,
-    ) -> Result<Self::MachineKey, HSMError>;
+    ) -> Result<Self::MachineKey, HsmError>;
 
     fn hmac_key_create(&mut self, mk: &Self::MachineKey)
-        -> Result<Self::LoadableHmacKey, HSMError>;
+        -> Result<Self::LoadableHmacKey, HsmError>;
 
     fn hmac_key_load(
         &mut self,
         mk: &Self::MachineKey,
         exported_key: &Self::LoadableHmacKey,
-    ) -> Result<Self::HmacKey, HSMError>;
+    ) -> Result<Self::HmacKey, HsmError>;
 
-    fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HSMError>;
+    fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
 }
 
 #[cfg(test)]
@@ -68,8 +68,8 @@ mod tests {
     #[test]
     fn basic_interaction_hw_bound_key() {
         let _ = tracing_subscriber::fmt::try_init();
-        // Create the HSM.
-        let mut hsm = SoftHSM::new();
+        // Create the Hsm.
+        let mut hsm = SoftHsm::new();
 
         // Request a new machine-key-context. This key "owns" anything
         // created underneath it.
@@ -99,13 +99,13 @@ mod tests {
             .hmac(&hmac_key, &[0, 1, 2, 3])
             .expect("Unable to perform hmac");
 
-        // destroy the HSM
+        // destroy the Hsm
         drop(hmac_key);
         drop(machine_key);
         drop(hsm);
 
-        // Make a new HSM context.
-        let mut hsm = SoftHSM::new();
+        // Make a new Hsm context.
+        let mut hsm = SoftHsm::new();
 
         // Load the contexts.
         let machine_key = hsm
