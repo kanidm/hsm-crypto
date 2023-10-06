@@ -2,8 +2,10 @@
 name = "kanidm-hsm-crypto"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MPL-2.0"
+homepage = "https://github.com/kanidm/hsm-crypto/"
+repository = "https://github.com/kanidm/hsm-crypto/"
+authors = ["William Brown <william@blackhats.net.au>"]
 
 [dependencies]
 openssl = "^0.10.57"
@@ -12,4 +14,3 @@ serde = { version = "^1.0", features = ["derive"] }
 
 [dev-dependencies]
 tracing-subscriber = "^0.3.17"
-
