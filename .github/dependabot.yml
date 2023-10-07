@@ -15,10 +15,8 @@ updates:
       time: "06:00"
       timezone: Australia/Brisbane
     groups:
-      production-dependencies:
-        dependency-type: "production"
-      development-dependencies:
-        dependency-type: "development"
+      all:
+        dependency-type: "all"
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -29,4 +27,4 @@ updates:
     open-pull-requests-limit: 99
     groups:
       all:
-        pattern: "*"
+        dependency-type: "all"
