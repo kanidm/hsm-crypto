@@ -1,0 +1,30 @@
+---
+# This runs updates weekly on a Monday at 6am Brisbane time
+# and groups them by package ecosystem
+#
+# Security updates are separate per Github's docs:
+# <https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#groups>
+
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      time: "06:00"
+      timezone: Australia/Brisbane
+    groups:
+      all:
+        dependency-type: "all"
+  # Maintain dependencies for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
+      time: "06:00"
+      timezone: Australia/Brisbane
+    open-pull-requests-limit: 99
+    groups:
+      all:
+        dependency-type: "all"
