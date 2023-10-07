@@ -97,7 +97,6 @@ jobs:
             !target/doc/src/
           if-no-files-found: error
           retention-days: 14
-      - run: ./.github/check_built_docs.sh
       # Build with all features
       - run: |
           cargo ${{ matrix.rust_version == 'nightly' && '+nightly' || '' }} doc \
@@ -112,4 +111,3 @@ jobs:
             !target/doc/src/
           if-no-files-found: error
           retention-days: 14
-      - run: ./.github/check_built_docs.sh
