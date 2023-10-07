@@ -7,10 +7,16 @@ homepage = "https://github.com/kanidm/hsm-crypto/"
 repository = "https://github.com/kanidm/hsm-crypto/"
 authors = ["William Brown <william@blackhats.net.au>"]
 
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+# default = ["tpm"]
+tpm = ["dep:tss-esapi"]
+
 [dependencies]
 openssl = "^0.10.57"
 tracing = "^0.1.37"
 serde = { version = "^1.0", features = ["derive"] }
+tss-esapi = { version = "^7.3.0", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "^0.3.17"
