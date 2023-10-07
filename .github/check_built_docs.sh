@@ -5,10 +5,10 @@
 # features, regardless of which features were actually enabled.
 
 set -e
-readonly MANIFEST
-MANIFEST="$(dirname "$0")/doc_manifest"
-readonly TARGET_DIR
-TARGET_DIR="$(dirname "$0")/../target/doc/"
+# shellcheck disable=SC2155
+readonly MANIFEST="$(dirname "$0")/doc_manifest"
+# shellcheck disable=SC2155
+readonly TARGET_DIR="$(dirname "$0")/../target/doc/"
 c=0
 m=0
 
