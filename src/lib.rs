@@ -66,6 +66,7 @@ mod tests {
     use tracing::trace;
 
     #[test]
+    #[allow(clippy::expect_used)]
     fn basic_interaction_hw_bound_key() {
         let _ = tracing_subscriber::fmt::try_init();
         // Create the Hsm.
@@ -106,18 +107,18 @@ mod tests {
 
         // Make a new Hsm context.
         let mut hsm = SoftHsm::new();
-
         // Load the contexts.
+        #[allow(clippy::expect_used)]
         let machine_key = hsm
             .machine_key_load(&loadable_machine_key)
             .expect("Unable to load machine key");
-
         // Load the keys.
+        #[allow(clippy::expect_used)]
         let hmac_key = hsm
             .hmac_key_load(&machine_key, &loadable_hmac_key)
             .expect("Unable to load hmac key");
-
         // Do another hmac
+        #[allow(clippy::expect_used)]
         let output_2 = hsm
             .hmac(&hmac_key, &[0, 1, 2, 3])
             .expect("Unable to perform hmac");
