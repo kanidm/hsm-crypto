@@ -17,17 +17,38 @@
 #![allow(clippy::unreachable)]
 
 pub mod soft;
-// mod tpm;
+
+#[cfg(feature = "tpm")]
+pub mod tpm;
 // future goal ... once I can afford one ...
 // mod yubihsm;
 
 #[derive(Debug, Clone)]
-enum HsmError {
+pub enum HsmError {
     Aes256GcmConfig,
     Aes256GcmEncrypt,
     Aes256GcmDecrypt,
     HmacKey,
     HmacSign,
+
+    TpmContextCreate,
+    TpmPrimaryObjectAttributesInvalid,
+    TpmPrimaryPublicBuilderInvalid,
+    TpmPrimaryCreate,
+    TpmEntropy,
+
+    TpmMachineKeyObjectAttributesInvalid,
+    TpmMachineKeyBuilderInvalid,
+    TpmMachineKeyCreate,
+    TpmMachineKeyLoad,
+
+    TpmHmacKeyObjectAttributesInvalid,
+    TpmHmacKeyBuilderInvalid,
+    TpmHmacKeyCreate,
+    TpmHmacKeyLoad,
+    TpmHmacSign,
+
+    TpmHmacInputTooLarge,
 
     Entropy,
 }
@@ -56,74 +77,4 @@ trait Hsm {
     ) -> Result<Self::HmacKey, HsmError>;
 
     fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::soft::*;
-    use super::*;
-
-    use tracing::trace;
-
-    #[test]
-    #[allow(clippy::expect_used)]
-    fn basic_interaction_hw_bound_key() {
-        let _ = tracing_subscriber::fmt::try_init();
-        // Create the Hsm.
-        let mut hsm = SoftHsm::new();
-
-        // Request a new machine-key-context. This key "owns" anything
-        // created underneath it.
-        let loadable_machine_key = hsm
-            .machine_key_create()
-            .expect("Unable to create new machine key");
-
-        trace!(?loadable_machine_key);
-
-        let machine_key = hsm
-            .machine_key_load(&loadable_machine_key)
-            .expect("Unable to load machine key");
-
-        // from that ctx, create a hmac key.
-        let loadable_hmac_key = hsm
-            .hmac_key_create(&machine_key)
-            .expect("Unable to create new hmac key");
-
-        trace!(?loadable_hmac_key);
-
-        let hmac_key = hsm
-            .hmac_key_load(&machine_key, &loadable_hmac_key)
-            .expect("Unable to load hmac key");
-
-        // do a hmac.
-        let output_1 = hsm
-            .hmac(&hmac_key, &[0, 1, 2, 3])
-            .expect("Unable to perform hmac");
-
-        // destroy the Hsm
-        drop(hmac_key);
-        drop(machine_key);
-        drop(hsm);
-
-        // Make a new Hsm context.
-        let mut hsm = SoftHsm::new();
-        // Load the contexts.
-        #[allow(clippy::expect_used)]
-        let machine_key = hsm
-            .machine_key_load(&loadable_machine_key)
-            .expect("Unable to load machine key");
-        // Load the keys.
-        #[allow(clippy::expect_used)]
-        let hmac_key = hsm
-            .hmac_key_load(&machine_key, &loadable_hmac_key)
-            .expect("Unable to load hmac key");
-        // Do another hmac
-        #[allow(clippy::expect_used)]
-        let output_2 = hsm
-            .hmac(&hmac_key, &[0, 1, 2, 3])
-            .expect("Unable to perform hmac");
-
-        // It should be the same.
-        assert_eq!(output_1, output_2);
-    }
 }

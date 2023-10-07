@@ -1,5 +1,3 @@
-use tracing::trace;
-
 use crate::{Hsm, HsmError};
 
 use openssl::hash::MessageDigest;
@@ -9,6 +7,7 @@ use openssl::sign::Signer;
 use openssl::symm::{Cipher, Crypter, Mode};
 
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 #[derive(Default)]
 pub struct SoftHsm {}
@@ -230,7 +229,8 @@ fn aes_256_gcm_decrypt(
 
 #[cfg(test)]
 mod tests {
-    use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
+    use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, SoftHsm};
+    use crate::Hsm;
     use tracing::trace;
 
     #[test]
@@ -248,5 +248,66 @@ mod tests {
         let output = aes_256_gcm_decrypt(&enc, &tag, key, iv).expect("Unable to decrypt");
 
         assert_eq!(&input, output.as_slice());
+    }
+
+    #[test]
+    fn soft_hmac_hw_bound() {
+        let _ = tracing_subscriber::fmt::try_init();
+        // Create the Hsm.
+        let mut hsm = SoftHsm::new();
+
+        // Request a new machine-key-context. This key "owns" anything
+        // created underneath it.
+        let loadable_machine_key = hsm
+            .machine_key_create()
+            .expect("Unable to create new machine key");
+
+        trace!(?loadable_machine_key);
+
+        let machine_key = hsm
+            .machine_key_load(&loadable_machine_key)
+            .expect("Unable to load machine key");
+
+        // from that ctx, create a hmac key.
+        let loadable_hmac_key = hsm
+            .hmac_key_create(&machine_key)
+            .expect("Unable to create new hmac key");
+
+        trace!(?loadable_hmac_key);
+
+        let hmac_key = hsm
+            .hmac_key_load(&machine_key, &loadable_hmac_key)
+            .expect("Unable to load hmac key");
+
+        // do a hmac.
+        let output_1 = hsm
+            .hmac(&hmac_key, &[0, 1, 2, 3])
+            .expect("Unable to perform hmac");
+
+        // destroy the Hsm
+        drop(hmac_key);
+        drop(machine_key);
+        drop(hsm);
+
+        // Make a new Hsm context.
+        let mut hsm = SoftHsm::new();
+
+        // Load the contexts.
+        let machine_key = hsm
+            .machine_key_load(&loadable_machine_key)
+            .expect("Unable to load machine key");
+
+        // Load the keys.
+        let hmac_key = hsm
+            .hmac_key_load(&machine_key, &loadable_hmac_key)
+            .expect("Unable to load hmac key");
+
+        // Do another hmac
+        let output_2 = hsm
+            .hmac(&hmac_key, &[0, 1, 2, 3])
+            .expect("Unable to perform hmac");
+
+        // It should be the same.
+        assert_eq!(output_1, output_2);
     }
 }
