@@ -1,4 +1,5 @@
-use crate::{Hsm, HsmError};
+use crate::{AuthValue, Hsm, HsmError};
+use zeroize::Zeroizing;
 
 use openssl::hash::MessageDigest;
 use openssl::pkey::{PKey, Private};
@@ -7,7 +8,7 @@ use openssl::sign::Signer;
 use openssl::symm::{Cipher, Crypter, Mode};
 
 use serde::{Deserialize, Serialize};
-use tracing::trace;
+use tracing::error;
 
 #[derive(Default)]
 pub struct SoftHsm {}
@@ -25,7 +26,7 @@ impl SoftHsm {
 }
 
 pub enum SoftMachineKey {
-    Aes256Gcm { key: [u8; 32] },
+    Aes256Gcm { key: Zeroizing<Vec<u8>> },
 }
 
 impl Drop for SoftMachineKey {
@@ -36,7 +37,11 @@ impl Drop for SoftMachineKey {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SoftLoadableMachineKey {
-    Aes256GcmV1 { key: [u8; 32] },
+    Aes256GcmV1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+    },
 }
 
 pub enum SoftHmacKey {
@@ -59,24 +64,46 @@ impl Hsm for SoftHsm {
     type HmacKey = SoftHmacKey;
     type LoadableHmacKey = SoftLoadableHmacKey;
 
-    fn machine_key_create(&mut self) -> Result<Self::LoadableMachineKey, HsmError> {
+    fn machine_key_create(
+        &mut self,
+        auth_value: &AuthValue,
+    ) -> Result<Self::LoadableMachineKey, HsmError> {
         // Create a "machine binding" key.
-        let mut buf = [0; 32];
-        rand_bytes(&mut buf).map_err(|ossl_err| {
-            trace!(?ossl_err);
+        let mut buf = Zeroizing::new([0; 32]);
+        rand_bytes(buf.as_mut()).map_err(|ossl_err| {
+            error!(?ossl_err);
             HsmError::Entropy
         })?;
 
-        Ok(SoftLoadableMachineKey::Aes256GcmV1 { key: buf })
+        // Encrypt it.
+        let mut iv = [0; 16];
+        rand_bytes(&mut iv).map_err(|ossl_err| {
+            error!(?ossl_err);
+            HsmError::Entropy
+        })?;
+
+        let (key, tag) = match auth_value {
+            AuthValue::Key256Bit { auth_key } => {
+                aes_256_gcm_encrypt(buf.as_ref(), auth_key.as_ref(), &iv)?
+            }
+        };
+
+        Ok(SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv })
     }
 
     fn machine_key_load(
         &mut self,
+        auth_value: &AuthValue,
         loadable_key: &Self::LoadableMachineKey,
     ) -> Result<Self::MachineKey, HsmError> {
         match loadable_key {
-            SoftLoadableMachineKey::Aes256GcmV1 { key } => {
-                Ok(SoftMachineKey::Aes256Gcm { key: *key })
+            SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv } => {
+                let raw_key = match auth_value {
+                    AuthValue::Key256Bit { auth_key } => {
+                        aes_256_gcm_decrypt(key, tag, auth_key.as_ref(), iv)?
+                    }
+                };
+                Ok(SoftMachineKey::Aes256Gcm { key: raw_key })
             }
         }
     }
@@ -85,20 +112,22 @@ impl Hsm for SoftHsm {
         &mut self,
         mk: &Self::MachineKey,
     ) -> Result<Self::LoadableHmacKey, HsmError> {
-        let mut buf = [0; 32];
-        rand_bytes(&mut buf).map_err(|ossl_err| {
-            trace!(?ossl_err);
+        let mut buf = Zeroizing::new([0; 32]);
+        rand_bytes(buf.as_mut()).map_err(|ossl_err| {
+            error!(?ossl_err);
             HsmError::Entropy
         })?;
 
         let mut iv = [0; 16];
         rand_bytes(&mut iv).map_err(|ossl_err| {
-            trace!(?ossl_err);
+            error!(?ossl_err);
             HsmError::Entropy
         })?;
 
         let (key, tag) = match mk {
-            SoftMachineKey::Aes256Gcm { key } => aes_256_gcm_encrypt(&buf, key, &iv)?,
+            SoftMachineKey::Aes256Gcm { key } => {
+                aes_256_gcm_encrypt(buf.as_ref(), key.as_ref(), &iv)?
+            }
         };
 
         Ok(SoftLoadableHmacKey::Sha256V1 { key, tag, iv })
@@ -114,10 +143,10 @@ impl Hsm for SoftHsm {
                 SoftMachineKey::Aes256Gcm { key: mk_key },
                 SoftLoadableHmacKey::Sha256V1 { key, tag, iv },
             ) => {
-                let raw_key = aes_256_gcm_decrypt(key, tag, mk_key, iv)?;
+                let raw_key = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
 
-                let pkey = PKey::hmac(&raw_key).map_err(|ossl_err| {
-                    trace!(?ossl_err);
+                let pkey = PKey::hmac(raw_key.as_ref()).map_err(|ossl_err| {
+                    error!(?ossl_err);
                     HsmError::HmacKey
                 })?;
 
@@ -131,17 +160,17 @@ impl Hsm for SoftHsm {
             SoftHmacKey::Sha256 { pkey } => {
                 let mut signer =
                     Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
-                        trace!(?ossl_err);
+                        error!(?ossl_err);
                         HsmError::HmacKey
                     })?;
 
                 signer.update(input).map_err(|ossl_err| {
-                    trace!(?ossl_err);
+                    error!(?ossl_err);
                     HsmError::HmacSign
                 })?;
 
                 signer.sign_to_vec().map_err(|ossl_err| {
-                    trace!(?ossl_err);
+                    error!(?ossl_err);
                     HsmError::HmacSign
                 })
             }
@@ -160,7 +189,7 @@ fn aes_256_gcm_encrypt(
     let mut ciphertext = vec![0; input.len() + block_size];
 
     let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(iv)).map_err(|ossl_err| {
-        trace!(?ossl_err);
+        error!(?ossl_err);
         HsmError::Aes256GcmConfig
     })?;
 
@@ -170,18 +199,18 @@ fn aes_256_gcm_encrypt(
     let mut count = encrypter
         .update(input, &mut ciphertext)
         .map_err(|ossl_err| {
-            trace!(?ossl_err);
+            error!(?ossl_err);
             HsmError::Aes256GcmEncrypt
         })?;
     count += encrypter.finalize(&mut ciphertext).map_err(|ossl_err| {
-        trace!(?ossl_err);
+        error!(?ossl_err);
         HsmError::Aes256GcmEncrypt
     })?;
     ciphertext.truncate(count);
 
     let mut tag = [0; 16];
     encrypter.get_tag(&mut tag).map_err(|ossl_err| {
-        trace!(?ossl_err);
+        error!(?ossl_err);
         HsmError::Aes256GcmEncrypt
     })?;
 
@@ -193,32 +222,32 @@ fn aes_256_gcm_decrypt(
     tag: &[u8],
     key: &[u8],
     iv: &[u8],
-) -> Result<Vec<u8>, HsmError> {
+) -> Result<Zeroizing<Vec<u8>>, HsmError> {
     let cipher = Cipher::aes_256_gcm();
 
     let block_size = cipher.block_size();
-    let mut plaintext = vec![0; input.len() + block_size];
+    let mut plaintext = Zeroizing::new(vec![0; input.len() + block_size]);
 
     let mut decrypter = Crypter::new(cipher, Mode::Decrypt, key, Some(iv)).map_err(|ossl_err| {
-        trace!(?ossl_err);
+        error!(?ossl_err);
         HsmError::Aes256GcmConfig
     })?;
 
     decrypter.pad(true);
     decrypter.set_tag(tag).map_err(|ossl_err| {
-        trace!(?ossl_err);
+        error!(?ossl_err);
         HsmError::Aes256GcmConfig
     })?;
 
     let mut count = decrypter
         .update(input, &mut plaintext)
         .map_err(|ossl_err| {
-            trace!(?ossl_err);
+            error!(?ossl_err);
             HsmError::Aes256GcmDecrypt
         })?;
 
     count += decrypter.finalize(&mut plaintext).map_err(|ossl_err| {
-        trace!(?ossl_err);
+        error!(?ossl_err);
         HsmError::Aes256GcmDecrypt
     })?;
 
@@ -230,7 +259,8 @@ fn aes_256_gcm_decrypt(
 #[cfg(test)]
 mod tests {
     use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, SoftHsm};
-    use crate::Hsm;
+    use crate::{AuthValue, Hsm};
+    use std::str::FromStr;
     use tracing::trace;
 
     #[test]
@@ -256,16 +286,19 @@ mod tests {
         // Create the Hsm.
         let mut hsm = SoftHsm::new();
 
+        let auth_value =
+            AuthValue::from_str("Ohquiech9jis7Poo8Di7eth3").expect("Unable to create auth value");
+
         // Request a new machine-key-context. This key "owns" anything
         // created underneath it.
         let loadable_machine_key = hsm
-            .machine_key_create()
+            .machine_key_create(&auth_value)
             .expect("Unable to create new machine key");
 
         trace!(?loadable_machine_key);
 
         let machine_key = hsm
-            .machine_key_load(&loadable_machine_key)
+            .machine_key_load(&auth_value, &loadable_machine_key)
             .expect("Unable to load machine key");
 
         // from that ctx, create a hmac key.
@@ -294,7 +327,7 @@ mod tests {
 
         // Load the contexts.
         let machine_key = hsm
-            .machine_key_load(&loadable_machine_key)
+            .machine_key_load(&auth_value, &loadable_machine_key)
             .expect("Unable to load machine key");
 
         // Load the keys.
