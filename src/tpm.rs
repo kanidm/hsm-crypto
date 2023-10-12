@@ -1,11 +1,11 @@
-use crate::{Hsm, HsmError};
+use crate::{AuthValue, Hsm, HsmError};
 // use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use tss_esapi::attributes::ObjectAttributesBuilder;
 use tss_esapi::handles::KeyHandle;
 use tss_esapi::structures::{
-    CreateKeyResult, CreatePrimaryKeyResult, Digest, KeyedHashScheme, MaxBuffer,
+    Auth, CreateKeyResult, CreatePrimaryKeyResult, Digest, KeyedHashScheme, MaxBuffer,
     Private as TpmPrivate, Public as TpmPublic, PublicBuilder, PublicKeyedHashParameters,
     SymmetricCipherParameters, SymmetricDefinitionObject,
 };
@@ -111,7 +111,10 @@ impl Hsm for TpmHsm {
     type HmacKey = TpmHmacKey;
     type LoadableHmacKey = TpmLoadableHmacKey;
 
-    fn machine_key_create(&mut self) -> Result<Self::LoadableMachineKey, HsmError> {
+    fn machine_key_create(
+        &mut self,
+        auth_value: &AuthValue,
+    ) -> Result<Self::LoadableMachineKey, HsmError> {
         // Setup the primary key.
         let primary = self.setup_owner_primary()?;
 
@@ -154,12 +157,27 @@ impl Hsm for TpmHsm {
                 HsmError::TpmMachineKeyBuilderInvalid
             })?;
 
+        let tpm_auth_value = match auth_value {
+            AuthValue::Key256Bit { auth_key } => Auth::try_from(auth_key.as_ref()),
+        }
+        .map_err(|tpm_err| {
+            error!(?tpm_err);
+            HsmError::TpmAuthValueInvalid
+        })?;
+
         self.tpm_ctx
             .execute_with_nullauth_session(|ctx_outer| {
                 ctx_outer.execute_with_temporary_object(
                     primary.key_handle.into(),
                     |ctx, object_handle| {
-                        ctx.create(object_handle.into(), key_pub, None, None, None, None)
+                        ctx.create(
+                            object_handle.into(),
+                            key_pub,
+                            Some(tpm_auth_value),
+                            None,
+                            None,
+                            None,
+                        )
                     },
                 )
             })
@@ -182,19 +200,31 @@ impl Hsm for TpmHsm {
 
     fn machine_key_load(
         &mut self,
+        auth_value: &AuthValue,
         loadable_key: &Self::LoadableMachineKey,
     ) -> Result<Self::MachineKey, HsmError> {
         // Was this cleared in the former stages?
         let primary = self.setup_owner_primary()?;
+
+        let tpm_auth_value = match auth_value {
+            AuthValue::Key256Bit { auth_key } => Auth::try_from(auth_key.as_ref()),
+        }
+        .map_err(|tpm_err| {
+            error!(?tpm_err);
+            HsmError::TpmAuthValueInvalid
+        })?;
 
         self.tpm_ctx
             .execute_with_nullauth_session(|ctx_outer| {
                 ctx_outer.execute_with_temporary_object(
                     primary.key_handle.into(),
                     |ctx, object_handle| match loadable_key {
-                        TpmLoadableMachineKey::Aes128CfbV1 { private, public } => {
-                            ctx.load(object_handle.into(), private.clone(), public.clone())
-                        }
+                        TpmLoadableMachineKey::Aes128CfbV1 { private, public } => ctx
+                            .load(object_handle.into(), private.clone(), public.clone())
+                            .and_then(|key_handle| {
+                                ctx.tr_set_auth(key_handle.into(), tpm_auth_value)
+                                    .map(|()| key_handle)
+                            }),
                     },
                 )
             })
@@ -307,7 +337,7 @@ impl Hsm for TpmHsm {
 #[cfg(test)]
 mod tests {
     use super::{TctiNameConf, TpmHsm};
-    use crate::Hsm;
+    use crate::{AuthValue, Hsm};
     use std::str::FromStr;
     use tracing::trace;
 
@@ -321,16 +351,19 @@ mod tests {
         // Create the Hsm.
         let mut hsm = TpmHsm::new(tpm_name_config.clone()).expect("Unable to build Tpm Context");
 
+        // Create a new random auth_value.
+        let auth_value = AuthValue::new_random().expect("Failed to generate new random secret");
+
         // Request a new machine-key-context. This key "owns" anything
         // created underneath it.
         let loadable_machine_key = hsm
-            .machine_key_create()
+            .machine_key_create(&auth_value)
             .expect("Unable to create new machine key");
 
         trace!(?loadable_machine_key);
 
         let machine_key = hsm
-            .machine_key_load(&loadable_machine_key)
+            .machine_key_load(&auth_value, &loadable_machine_key)
             .expect("Unable to load machine key");
 
         // from that ctx, create a hmac key.
@@ -359,7 +392,7 @@ mod tests {
 
         // Load the contexts.
         let machine_key = hsm
-            .machine_key_load(&loadable_machine_key)
+            .machine_key_load(&auth_value, &loadable_machine_key)
             .expect("Unable to load machine key");
 
         // Load the keys.
