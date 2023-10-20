@@ -233,7 +233,7 @@ impl HsmIdentity for SoftHsm {
 
                 let der = eckey
                     .private_key_to_der()
-                    .map(|bytes| Zeroizing::new(bytes))
+                    .map(Zeroizing::new)
                     .map_err(|ossl_err| {
                         error!(?ossl_err);
                         HsmError::EcKeyPrivateToDer
@@ -263,7 +263,7 @@ impl HsmIdentity for SoftHsm {
 
                 let der = rsa
                     .private_key_to_der()
-                    .map(|bytes| Zeroizing::new(bytes))
+                    .map(Zeroizing::new)
                     .map_err(|ossl_err| {
                         error!(?ossl_err);
                         HsmError::RsaPrivateToDer
@@ -381,7 +381,7 @@ impl HsmIdentity for SoftHsm {
         let mut signer = match key {
             SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
             | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
-                Signer::new(MessageDigest::sha256(), &pkey).map_err(|ossl_err| {
+                Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
                     error!(?ossl_err);
                     HsmError::IdentityKeyInvalidForSigning
                 })?
