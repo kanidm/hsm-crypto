@@ -33,6 +33,11 @@ pub enum AuthValue {
     Key256Bit { auth_key: Zeroizing<[u8; 32]> },
 }
 
+pub enum KeyAlgorithm {
+    Rsa2048,
+    Ecdsa256,
+}
+
 impl AuthValue {
     pub fn new_random() -> Result<Self, HsmError> {
         let mut auth_key = Zeroizing::new([0; 32]);
@@ -89,6 +94,20 @@ pub enum HsmError {
     Aes256GcmDecrypt,
     HmacKey,
     HmacSign,
+    EcGroup,
+    EcKeyGenerate,
+    EcKeyPrivateToDer,
+    EcKeyFromDer,
+    EcKeyToPrivateKey,
+    IdentityKeyPublicToDer,
+    IdentityKeyPublicToPem,
+    IdentityKeyInvalidForSigning,
+    IdentityKeySignature,
+    X509FromDer,
+    RsaGenerate,
+    RsaPrivateToDer,
+    RsaKeyFromDer,
+    RsaToPrivateKey,
 
     TpmContextCreate,
     TpmPrimaryObjectAttributesInvalid,
@@ -141,4 +160,31 @@ trait Hsm {
     ) -> Result<Self::HmacKey, HsmError>;
 
     fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
+}
+
+trait HsmIdentity: Hsm {
+    type IdentityKey;
+    type LoadableIdentityKey;
+
+    fn identity_key_create(
+        &mut self,
+        mk: &Self::MachineKey,
+        algorithm: KeyAlgorithm,
+    ) -> Result<Self::LoadableIdentityKey, HsmError>;
+
+    fn identity_key_load(
+        &mut self,
+        mk: &Self::MachineKey,
+        loadable_key: &Self::LoadableIdentityKey,
+    ) -> Result<Self::IdentityKey, HsmError>;
+
+    fn identity_key_sign(
+        &mut self,
+        key: &Self::IdentityKey,
+        input: &[u8],
+    ) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_public_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_public_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
 }
