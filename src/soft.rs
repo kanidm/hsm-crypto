@@ -9,7 +9,7 @@ use openssl::rand::rand_bytes;
 use openssl::rsa::Rsa;
 use openssl::sign::Signer;
 use openssl::symm::{Cipher, Crypter, Mode};
-use openssl::x509::X509;
+use openssl::x509::{X509NameBuilder, X509ReqBuilder, X509};
 
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -311,10 +311,23 @@ impl HsmIdentity for SoftHsm {
                 })?;
 
                 let x509 = match x509 {
-                    Some(der) => X509::from_der(der).map(Some).map_err(|ossl_err| {
-                        error!(?ossl_err);
-                        HsmError::X509FromDer
-                    })?,
+                    Some(der) => {
+                        let x509 = X509::from_der(der).map_err(|ossl_err| {
+                            error!(?ossl_err);
+                            HsmError::X509FromDer
+                        })?;
+
+                        let x509_pkey = x509.public_key().map_err(|ossl_err| {
+                            error!(?ossl_err);
+                            HsmError::X509PublicKey
+                        })?;
+
+                        if !pkey.public_eq(&x509_pkey) {
+                            return Err(HsmError::X509KeyMismatch);
+                        }
+
+                        Some(x509)
+                    }
                     None => None,
                 };
 
@@ -337,10 +350,23 @@ impl HsmIdentity for SoftHsm {
                 })?;
 
                 let x509 = match x509 {
-                    Some(der) => X509::from_der(der).map(Some).map_err(|ossl_err| {
-                        error!(?ossl_err);
-                        HsmError::X509FromDer
-                    })?,
+                    Some(der) => {
+                        let x509 = X509::from_der(der).map_err(|ossl_err| {
+                            error!(?ossl_err);
+                            HsmError::X509FromDer
+                        })?;
+
+                        let x509_pkey = x509.public_key().map_err(|ossl_err| {
+                            error!(?ossl_err);
+                            HsmError::X509PublicKey
+                        })?;
+
+                        if !pkey.public_eq(&x509_pkey) {
+                            return Err(HsmError::X509KeyMismatch);
+                        }
+
+                        Some(x509)
+                    }
                     None => None,
                 };
 
@@ -373,6 +399,23 @@ impl HsmIdentity for SoftHsm {
         }
     }
 
+    fn identity_key_x509_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError> {
+        match key {
+            SoftIdentityKey::Ecdsa256 {
+                pkey: _,
+                x509: Some(x509),
+            }
+            | SoftIdentityKey::Rsa2048 {
+                pkey: _,
+                x509: Some(x509),
+            } => x509.to_pem().map_err(|ossl_err| {
+                error!(?ossl_err);
+                HsmError::IdentityKeyX509ToPem
+            }),
+            _ => Err(HsmError::IdentityKeyX509Missing),
+        }
+    }
+
     fn identity_key_sign(
         &mut self,
         key: &Self::IdentityKey,
@@ -392,6 +435,107 @@ impl HsmIdentity for SoftHsm {
             error!(?ossl_err);
             HsmError::IdentityKeySignature
         })
+    }
+
+    fn identity_key_certificate_request(
+        &mut self,
+        mk: &Self::MachineKey,
+        loadable_key: &Self::LoadableIdentityKey,
+        cn: &str,
+    ) -> Result<Vec<u8>, HsmError> {
+        let id_key = self.identity_key_load(mk, loadable_key)?;
+
+        let mut req_builder = X509ReqBuilder::new().map_err(|ossl_err| {
+            error!(?ossl_err);
+            HsmError::X509RequestBuilder
+        })?;
+
+        let mut x509_name = X509NameBuilder::new().map_err(|ossl_err| {
+            error!(?ossl_err);
+            HsmError::X509NameBuilder
+        })?;
+
+        x509_name
+            .append_entry_by_text("CN", cn)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                HsmError::X509NameAppend
+            })?;
+
+        let x509_name = x509_name.build();
+        req_builder
+            .set_subject_name(&x509_name)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                HsmError::X509RequestSubjectName
+            })?;
+
+        match id_key {
+            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
+            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+                req_builder.set_pubkey(&pkey).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    HsmError::X509RequestSetPublic
+                })?;
+
+                req_builder
+                    .sign(&pkey, MessageDigest::sha256())
+                    .map_err(|ossl_err| {
+                        error!(?ossl_err);
+                        HsmError::X509RequestSign
+                    })?;
+            }
+        }
+
+        req_builder.build().to_der().map_err(|ossl_err| {
+            error!(?ossl_err);
+            HsmError::X509RequestToDer
+        })
+    }
+
+    fn identity_key_associate_certificate(
+        &mut self,
+        mk: &Self::MachineKey,
+        loadable_key: &Self::LoadableIdentityKey,
+        certificate_der: &[u8],
+    ) -> Result<Self::LoadableIdentityKey, HsmError> {
+        let id_key = self.identity_key_load(mk, loadable_key)?;
+
+        // Verify the certificate matches our key
+        let certificate = X509::from_der(certificate_der).map_err(|ossl_err| {
+            error!(?ossl_err);
+            HsmError::X509FromDer
+        })?;
+
+        let certificate_pkey = certificate.public_key().map_err(|ossl_err| {
+            error!(?ossl_err);
+            HsmError::X509PublicKey
+        })?;
+
+        match id_key {
+            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
+            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+                if !pkey.public_eq(&certificate_pkey) {
+                    return Err(HsmError::X509KeyMismatch);
+                }
+            }
+        };
+
+        // At this point we know the cert belongs to this key, so lets
+        // get it bound.
+
+        let mut cloned_key = loadable_key.clone();
+
+        match &mut cloned_key {
+            SoftLoadableIdentityKey::Ecdsa256V1 { ref mut x509, .. } => {
+                *x509 = Some(certificate_der.to_vec());
+            }
+            SoftLoadableIdentityKey::Rsa2048V1 { ref mut x509, .. } => {
+                *x509 = Some(certificate_der.to_vec());
+            }
+        };
+
+        Ok(cloned_key)
     }
 }
 
@@ -477,9 +621,17 @@ fn aes_256_gcm_decrypt(
 mod tests {
     use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, KeyAlgorithm, SoftHsm};
     use crate::{AuthValue, Hsm, HsmIdentity};
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::BigNum;
+    use openssl::ec::{EcGroup, EcKey};
     use openssl::hash::MessageDigest;
-    use openssl::pkey::PKey;
+    use openssl::nid::Nid;
+    use openssl::pkey::{PKey, Private};
     use openssl::sign::Verifier;
+    use openssl::x509::extension::{
+        BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectKeyIdentifier,
+    };
+    use openssl::x509::{X509NameBuilder, X509Req, X509};
     use std::str::FromStr;
     use tracing::trace;
 
@@ -686,5 +838,180 @@ mod tests {
             .expect("Unable to validate signature");
 
         assert!(valid);
+    }
+
+    fn create_ca() -> (PKey<Private>, X509) {
+        let ecgroup = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let eckey = EcKey::generate(&ecgroup).unwrap();
+        let ca_key = PKey::from_ec_key(eckey).unwrap();
+
+        let mut x509_name = X509NameBuilder::new().unwrap();
+        x509_name
+            .append_entry_by_text("CN", "Dynamic Softtoken CA")
+            .unwrap();
+        let x509_name = x509_name.build();
+
+        let mut cert_builder = X509::builder().unwrap();
+        cert_builder.set_version(2).unwrap();
+
+        let serial_number = BigNum::from_u32(1)
+            .and_then(|serial| serial.to_asn1_integer())
+            .unwrap();
+        cert_builder.set_serial_number(&serial_number).unwrap();
+        cert_builder.set_subject_name(&x509_name).unwrap();
+        cert_builder.set_issuer_name(&x509_name).unwrap();
+
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        let not_after = Asn1Time::days_from_now(1).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+
+        cert_builder
+            .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+            .unwrap();
+        cert_builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .key_cert_sign()
+                    .crl_sign()
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let subject_key_identifier = SubjectKeyIdentifier::new()
+            .build(&cert_builder.x509v3_context(None, None))
+            .unwrap();
+        cert_builder
+            .append_extension(subject_key_identifier)
+            .unwrap();
+
+        cert_builder.set_pubkey(&ca_key).unwrap();
+
+        cert_builder.sign(&ca_key, MessageDigest::sha256()).unwrap();
+        let ca_cert = cert_builder.build();
+
+        (ca_key, ca_cert)
+    }
+
+    fn sign_request(req_der: &[u8], ca_key: &PKey<Private>, ca_cert: &X509) -> X509 {
+        let req = X509Req::from_der(req_der).unwrap();
+
+        let req_pkey = req.public_key().unwrap();
+        assert!(req.verify(&req_pkey).unwrap());
+
+        // depends on the ca, for a lot of them with machine id certs they ignore the values in
+        // the csr and stomp them with their own things.
+
+        let mut cert_builder = X509::builder().unwrap();
+        cert_builder.set_version(2).unwrap();
+
+        let serial_number = BigNum::from_u32(2)
+            .and_then(|serial| serial.to_asn1_integer())
+            .unwrap();
+        cert_builder.set_serial_number(&serial_number).unwrap();
+        cert_builder.set_subject_name(req.subject_name()).unwrap();
+        cert_builder
+            .set_issuer_name(ca_cert.subject_name())
+            .unwrap();
+
+        let not_before = Asn1Time::days_from_now(0).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        let not_after = Asn1Time::days_from_now(1).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+
+        cert_builder
+            .append_extension(BasicConstraints::new().critical().build().unwrap())
+            .unwrap();
+
+        /*
+        cert_builder.append_extension(
+            KeyUsage::new()
+                .critical()
+                .digital_signature()
+                .key_encipherment()
+                .build().unwrap()
+        ).unwrap();
+
+        let subject_key_identifier = SubjectKeyIdentifier::new().build(&cert_builder.x509v3_context(None, None)).unwrap();
+        cert_builder.append_extension(subject_key_identifier).unwrap();
+        */
+
+        cert_builder
+            .append_extension(
+                ExtendedKeyUsage::new()
+                    // .server_auth()
+                    .client_auth()
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        cert_builder.set_pubkey(&req_pkey).unwrap();
+
+        cert_builder.sign(&ca_key, MessageDigest::sha256()).unwrap();
+        cert_builder.build()
+    }
+
+    #[test]
+    fn soft_identity_ecdsa256_csr() {
+        let _ = tracing_subscriber::fmt::try_init();
+        // Create the Hsm.
+        let mut hsm = SoftHsm::new();
+
+        let auth_value =
+            AuthValue::from_str("Ohquiech9jis7Poo8Di7eth3").expect("Unable to create auth value");
+
+        // Request a new machine-key-context. This key "owns" anything
+        // created underneath it.
+        let loadable_machine_key = hsm
+            .machine_key_create(&auth_value)
+            .expect("Unable to create new machine key");
+
+        trace!(?loadable_machine_key);
+
+        let machine_key = hsm
+            .machine_key_load(&auth_value, &loadable_machine_key)
+            .expect("Unable to load machine key");
+
+        // from that ctx, create an identity key
+        let loadable_id_key = hsm
+            .identity_key_create(&machine_key, KeyAlgorithm::Ecdsa256)
+            .expect("Unable to create id key");
+
+        trace!(?loadable_id_key);
+
+        // Get the CSR
+
+        let csr_der = hsm
+            .identity_key_certificate_request(&machine_key, &loadable_id_key, "common name")
+            .expect("Failed to create csr");
+
+        // Now, we need to sign this to an x509 cert externally.
+        let (ca_key, ca_cert) = create_ca();
+
+        let signed_cert = sign_request(&csr_der, &ca_key, &ca_cert);
+        trace!(
+            "{}",
+            String::from_utf8_lossy(signed_cert.to_text().unwrap().as_slice())
+        );
+
+        let signed_cert_der = signed_cert.to_der().unwrap();
+
+        let loadable_id_key = hsm
+            .identity_key_associate_certificate(&machine_key, &loadable_id_key, &signed_cert_der)
+            .unwrap();
+
+        // Now load it in:
+        let id_key = hsm
+            .identity_key_load(&machine_key, &loadable_id_key)
+            .expect("Unable to load id key");
+
+        let id_key_x509_pem = hsm
+            .identity_key_x509_as_pem(&id_key)
+            .expect("Unable to get id key public pem");
+
+        trace!("\n{}", String::from_utf8_lossy(&id_key_x509_pem));
     }
 }
