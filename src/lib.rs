@@ -103,11 +103,22 @@ pub enum HsmError {
     IdentityKeyPublicToPem,
     IdentityKeyInvalidForSigning,
     IdentityKeySignature,
-    X509FromDer,
+    IdentityKeyX509ToPem,
+    IdentityKeyX509Missing,
     RsaGenerate,
     RsaPrivateToDer,
     RsaKeyFromDer,
     RsaToPrivateKey,
+    X509FromDer,
+    X509PublicKey,
+    X509KeyMismatch,
+    X509RequestBuilder,
+    X509NameBuilder,
+    X509NameAppend,
+    X509RequestSubjectName,
+    X509RequestSign,
+    X509RequestToDer,
+    X509RequestSetPublic,
 
     TpmContextCreate,
     TpmPrimaryObjectAttributesInvalid,
@@ -187,4 +198,20 @@ trait HsmIdentity: Hsm {
     fn identity_key_public_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
 
     fn identity_key_public_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_certificate_request(
+        &mut self,
+        mk: &Self::MachineKey,
+        loadable_key: &Self::LoadableIdentityKey,
+        cn: &str,
+    ) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_associate_certificate(
+        &mut self,
+        mk: &Self::MachineKey,
+        loadable_key: &Self::LoadableIdentityKey,
+        certificate_der: &[u8],
+    ) -> Result<Self::LoadableIdentityKey, HsmError>;
+
+    fn identity_key_x509_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
 }
