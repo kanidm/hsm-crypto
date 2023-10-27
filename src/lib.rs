@@ -104,6 +104,7 @@ pub enum HsmError {
     IdentityKeyInvalidForSigning,
     IdentityKeySignature,
     IdentityKeyX509ToPem,
+    IdentityKeyX509ToDer,
     IdentityKeyX509Missing,
     RsaGenerate,
     RsaPrivateToDer,
@@ -214,4 +215,5 @@ trait HsmIdentity: Hsm {
     ) -> Result<Self::LoadableIdentityKey, HsmError>;
 
     fn identity_key_x509_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
+    fn identity_key_x509_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
 }
