@@ -143,7 +143,7 @@ pub enum HsmError {
     Entropy,
 }
 
-trait Hsm {
+pub trait Hsm {
     type MachineKey;
     type LoadableMachineKey;
 
@@ -173,7 +173,7 @@ trait Hsm {
     fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
 }
 
-trait HsmIdentity: Hsm {
+pub trait HsmIdentity: Hsm {
     type IdentityKey;
     type LoadableIdentityKey;
 
