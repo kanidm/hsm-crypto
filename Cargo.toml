@@ -1,5 +1,6 @@
 [package]
 name = "kanidm-hsm-crypto"
+description = "A library for easily interacting with a HSM or TPM"
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
@@ -7,7 +8,6 @@ homepage = "https://github.com/kanidm/hsm-crypto/"
 repository = "https://github.com/kanidm/hsm-crypto/"
 authors = ["William Brown <william@blackhats.net.au>"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 # default = ["tpm"]
 tpm = ["dep:tss-esapi"]

@@ -19,8 +19,8 @@
 use std::str::FromStr;
 use tracing::error;
 use zeroize::Zeroizing;
-
 use argon2::MIN_SALT_LEN;
+use serde::{Deserialize, Serialize};
 
 pub mod soft;
 
@@ -142,36 +142,65 @@ pub enum HsmError {
     TpmHmacInputTooLarge,
 
     Entropy,
+    IncorrectKeyType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoadableMachineKey {
+    Soft(soft::SoftLoadableMachineKey),
+    #[cfg(feature = "tpm")]
+    Tpm(tpm::TpmLoadableMachineKey),
+    #[cfg(not(feature = "tpm"))]
+    Tpm(()),
+}
+
+pub enum MachineKey {
+    Soft(soft::SoftMachineKey),
+    #[cfg(feature = "tpm")]
+    Tpm(tpm::TpmMachineKey),
+    #[cfg(not(feature = "tpm"))]
+    Tpm(()),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoadableHmacKey {
+    Soft(soft::SoftLoadableHmacKey),
+    #[cfg(feature = "tpm")]
+    Tpm(tpm::TpmLoadableHmacKey),
+    #[cfg(not(feature = "tpm"))]
+    Tpm(()),
+}
+
+pub enum HmacKey {
+    Soft(soft::SoftHmacKey),
+    #[cfg(feature = "tpm")]
+    Tpm(tpm::TpmHmacKey),
+    #[cfg(not(feature = "tpm"))]
+    Tpm(()),
 }
 
 pub trait Hsm {
-    type MachineKey;
-    type LoadableMachineKey;
-
-    type HmacKey;
-    type LoadableHmacKey;
-
     fn machine_key_create(
         &mut self,
         auth_value: &AuthValue,
-    ) -> Result<Self::LoadableMachineKey, HsmError>;
+    ) -> Result<LoadableMachineKey, HsmError>;
 
     fn machine_key_load(
         &mut self,
         auth_value: &AuthValue,
-        exported_key: &Self::LoadableMachineKey,
-    ) -> Result<Self::MachineKey, HsmError>;
+        exported_key: &LoadableMachineKey,
+    ) -> Result<MachineKey, HsmError>;
 
-    fn hmac_key_create(&mut self, mk: &Self::MachineKey)
-        -> Result<Self::LoadableHmacKey, HsmError>;
+    fn hmac_key_create(&mut self, mk: &MachineKey)
+        -> Result<LoadableHmacKey, HsmError>;
 
     fn hmac_key_load(
         &mut self,
-        mk: &Self::MachineKey,
-        exported_key: &Self::LoadableHmacKey,
-    ) -> Result<Self::HmacKey, HsmError>;
+        mk: &MachineKey,
+        exported_key: &LoadableHmacKey,
+    ) -> Result<HmacKey, HsmError>;
 
-    fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
+    fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
 }
 
 pub trait HsmIdentity: Hsm {
@@ -180,13 +209,13 @@ pub trait HsmIdentity: Hsm {
 
     fn identity_key_create(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         algorithm: KeyAlgorithm,
     ) -> Result<Self::LoadableIdentityKey, HsmError>;
 
     fn identity_key_load(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         loadable_key: &Self::LoadableIdentityKey,
     ) -> Result<Self::IdentityKey, HsmError>;
 
@@ -202,14 +231,14 @@ pub trait HsmIdentity: Hsm {
 
     fn identity_key_certificate_request(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         loadable_key: &Self::LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, HsmError>;
 
     fn identity_key_associate_certificate(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         loadable_key: &Self::LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<Self::LoadableIdentityKey, HsmError>;

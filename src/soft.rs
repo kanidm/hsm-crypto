@@ -1,4 +1,4 @@
-use crate::{AuthValue, Hsm, HsmError, HsmIdentity, KeyAlgorithm};
+use crate::{AuthValue, Hsm, HsmError, HsmIdentity, KeyAlgorithm, LoadableMachineKey};
 use zeroize::Zeroizing;
 
 use openssl::ec::{EcGroup, EcKey};
@@ -90,7 +90,6 @@ pub enum SoftLoadableIdentityKey {
 
 impl Hsm for SoftHsm {
     type MachineKey = SoftMachineKey;
-    type LoadableMachineKey = SoftLoadableMachineKey;
 
     type HmacKey = SoftHmacKey;
     type LoadableHmacKey = SoftLoadableHmacKey;
@@ -98,7 +97,7 @@ impl Hsm for SoftHsm {
     fn machine_key_create(
         &mut self,
         auth_value: &AuthValue,
-    ) -> Result<Self::LoadableMachineKey, HsmError> {
+    ) -> Result<LoadableMachineKey, HsmError> {
         // Create a "machine binding" key.
         let mut buf = Zeroizing::new([0; 32]);
         rand_bytes(buf.as_mut()).map_err(|ossl_err| {
@@ -119,30 +118,33 @@ impl Hsm for SoftHsm {
             }
         };
 
-        Ok(SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv })
+        Ok(LoadableMachineKey::Soft(SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv }))
     }
 
     fn machine_key_load(
         &mut self,
         auth_value: &AuthValue,
-        loadable_key: &Self::LoadableMachineKey,
-    ) -> Result<Self::MachineKey, HsmError> {
+        loadable_key: &LoadableMachineKey,
+    ) -> Result<MachineKey, HsmError> {
         match loadable_key {
-            SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv } => {
+            LoadableMachineKey::Soft(SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv }) => {
                 let raw_key = match auth_value {
                     AuthValue::Key256Bit { auth_key } => {
                         aes_256_gcm_decrypt(key, tag, auth_key.as_ref(), iv)?
                     }
                 };
-                Ok(SoftMachineKey::Aes256Gcm { key: raw_key })
+                Ok(MachineKey::Soft(SoftMachineKey::Aes256Gcm { key: raw_key }))
+            }
+            LoadableMachineKey::Tpm(_) => {
+                Err(HsmError::IncorrectKeyType)
             }
         }
     }
 
     fn hmac_key_create(
         &mut self,
-        mk: &Self::MachineKey,
-    ) -> Result<Self::LoadableHmacKey, HsmError> {
+        mk: &MachineKey,
+    ) -> Result<LoadableHmacKey, HsmError> {
         let mut buf = Zeroizing::new([0; 32]);
         rand_bytes(buf.as_mut()).map_err(|ossl_err| {
             error!(?ossl_err);
@@ -161,14 +163,14 @@ impl Hsm for SoftHsm {
             }
         };
 
-        Ok(SoftLoadableHmacKey::Sha256V1 { key, tag, iv })
+        Ok(LoadableHmacKey::Soft(SoftLoadableHmacKey::Sha256V1 { key, tag, iv }))
     }
 
     fn hmac_key_load(
         &mut self,
-        mk: &Self::MachineKey,
-        loadable_key: &Self::LoadableHmacKey,
-    ) -> Result<Self::HmacKey, HsmError> {
+        mk: &MachineKey,
+        loadable_key: &LoadableHmacKey,
+    ) -> Result<HmacKey, HsmError> {
         match (mk, loadable_key) {
             (
                 SoftMachineKey::Aes256Gcm { key: mk_key },
@@ -181,14 +183,15 @@ impl Hsm for SoftHsm {
                     HsmError::HmacKey
                 })?;
 
-                Ok(SoftHmacKey::Sha256 { pkey })
+                Ok(HmacKey::Soft(SoftHmacKey::Sha256 { pkey }))
             }
+            (_, _) => Err(HsmError::IncorrectKeyType),
         }
     }
 
-    fn hmac(&mut self, hk: &Self::HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError> {
+    fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError> {
         match hk {
-            SoftHmacKey::Sha256 { pkey } => {
+            HmacKey::Soft(SoftHmacKey::Sha256 { pkey }) => {
                 let mut signer =
                     Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
                         error!(?ossl_err);
@@ -215,7 +218,7 @@ impl HsmIdentity for SoftHsm {
 
     fn identity_key_create(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         algorithm: KeyAlgorithm,
     ) -> Result<Self::LoadableIdentityKey, HsmError> {
         match algorithm {
@@ -290,7 +293,7 @@ impl HsmIdentity for SoftHsm {
 
     fn identity_key_load(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         loadable_key: &Self::LoadableIdentityKey,
     ) -> Result<Self::IdentityKey, HsmError> {
         match (mk, loadable_key) {
@@ -456,7 +459,7 @@ impl HsmIdentity for SoftHsm {
 
     fn identity_key_certificate_request(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         loadable_key: &Self::LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, HsmError> {
@@ -512,7 +515,7 @@ impl HsmIdentity for SoftHsm {
 
     fn identity_key_associate_certificate(
         &mut self,
-        mk: &Self::MachineKey,
+        mk: &MachineKey,
         loadable_key: &Self::LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<Self::LoadableIdentityKey, HsmError> {

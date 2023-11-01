@@ -106,7 +106,6 @@ impl TpmHsm {
 
 impl Hsm for TpmHsm {
     type MachineKey = TpmMachineKey;
-    type LoadableMachineKey = TpmLoadableMachineKey;
 
     type HmacKey = TpmHmacKey;
     type LoadableHmacKey = TpmLoadableHmacKey;
@@ -114,7 +113,7 @@ impl Hsm for TpmHsm {
     fn machine_key_create(
         &mut self,
         auth_value: &AuthValue,
-    ) -> Result<Self::LoadableMachineKey, HsmError> {
+    ) -> Result<LoadableMachineKey, HsmError> {
         // Setup the primary key.
         let primary = self.setup_owner_primary()?;
 
