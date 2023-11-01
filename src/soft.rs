@@ -416,6 +416,23 @@ impl HsmIdentity for SoftHsm {
         }
     }
 
+    fn identity_key_x509_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError> {
+        match key {
+            SoftIdentityKey::Ecdsa256 {
+                pkey: _,
+                x509: Some(x509),
+            }
+            | SoftIdentityKey::Rsa2048 {
+                pkey: _,
+                x509: Some(x509),
+            } => x509.to_der().map_err(|ossl_err| {
+                error!(?ossl_err);
+                HsmError::IdentityKeyX509ToDer
+            }),
+            _ => Err(HsmError::IdentityKeyX509Missing),
+        }
+    }
+
     fn identity_key_sign(
         &mut self,
         key: &Self::IdentityKey,
