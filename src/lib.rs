@@ -16,11 +16,11 @@
 #![deny(clippy::manual_let_else)]
 #![allow(clippy::unreachable)]
 
+use argon2::MIN_SALT_LEN;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
 use zeroize::Zeroizing;
-use argon2::MIN_SALT_LEN;
-use serde::{Deserialize, Serialize};
 
 pub mod soft;
 
@@ -191,8 +191,7 @@ pub trait Hsm {
         exported_key: &LoadableMachineKey,
     ) -> Result<MachineKey, HsmError>;
 
-    fn hmac_key_create(&mut self, mk: &MachineKey)
-        -> Result<LoadableHmacKey, HsmError>;
+    fn hmac_key_create(&mut self, mk: &MachineKey) -> Result<LoadableHmacKey, HsmError>;
 
     fn hmac_key_load(
         &mut self,
