@@ -17,6 +17,7 @@
 #![allow(clippy::unreachable)]
 
 use argon2::MIN_SALT_LEN;
+use openssl::pkey::{PKey, Private};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
@@ -50,10 +51,10 @@ impl AuthValue {
     }
 }
 
-impl FromStr for AuthValue {
-    type Err = HsmError;
+impl TryFrom<&[u8]> for AuthValue {
+    type Error = HsmError;
 
-    fn from_str(cleartext: &str) -> Result<Self, Self::Err> {
+    fn try_from(cleartext: &[u8]) -> Result<Self, Self::Error> {
         use argon2::{Algorithm, Argon2, Params, Version};
 
         let mut auth_key = Zeroizing::new([0; 32]);
@@ -72,7 +73,7 @@ impl FromStr for AuthValue {
             return Err(HsmError::AuthValueTooShort);
         }
 
-        let (salt, key) = cleartext.as_bytes().split_at(MIN_SALT_LEN);
+        let (salt, key) = cleartext.split_at(MIN_SALT_LEN);
 
         argon
             .hash_password_into(key, salt, auth_key.as_mut())
@@ -82,6 +83,14 @@ impl FromStr for AuthValue {
             })?;
 
         Ok(AuthValue::Key256Bit { auth_key })
+    }
+}
+
+impl FromStr for AuthValue {
+    type Err = HsmError;
+
+    fn from_str(cleartext: &str) -> Result<Self, Self::Err> {
+        Self::try_from(cleartext.as_bytes())
     }
 }
 
@@ -147,7 +156,11 @@ pub enum HsmError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableMachineKey {
-    Soft(soft::SoftLoadableMachineKey),
+    SoftAes256GcmV1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+    },
     #[cfg(feature = "tpm")]
     Tpm(tpm::TpmLoadableMachineKey),
     #[cfg(not(feature = "tpm"))]
@@ -155,7 +168,9 @@ pub enum LoadableMachineKey {
 }
 
 pub enum MachineKey {
-    Soft(soft::SoftMachineKey),
+    SoftAes256Gcm {
+        key: Zeroizing<Vec<u8>>,
+    },
     #[cfg(feature = "tpm")]
     Tpm(tpm::TpmMachineKey),
     #[cfg(not(feature = "tpm"))]
@@ -164,7 +179,11 @@ pub enum MachineKey {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableHmacKey {
-    Soft(soft::SoftLoadableHmacKey),
+    SoftSha256V1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+    },
     #[cfg(feature = "tpm")]
     Tpm(tpm::TpmLoadableHmacKey),
     #[cfg(not(feature = "tpm"))]
@@ -172,7 +191,9 @@ pub enum LoadableHmacKey {
 }
 
 pub enum HmacKey {
-    Soft(soft::SoftHmacKey),
+    SoftSha256 {
+        pkey: PKey<Private>,
+    },
     #[cfg(feature = "tpm")]
     Tpm(tpm::TpmHmacKey),
     #[cfg(not(feature = "tpm"))]

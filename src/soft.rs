@@ -20,48 +20,10 @@ use tracing::error;
 #[derive(Default)]
 pub struct SoftHsm {}
 
-impl Drop for SoftHsm {
-    fn drop(&mut self) {
-        // TODO: cleanup tasks, maybe? clippy had a sad about us using drop.
-    }
-}
-
 impl SoftHsm {
     pub fn new() -> Self {
         Self::default()
     }
-}
-
-pub enum SoftMachineKey {
-    Aes256Gcm { key: Zeroizing<Vec<u8>> },
-}
-
-impl Drop for SoftMachineKey {
-    fn drop(&mut self) {
-        // TODO: cleanup tasks, maybe? clippy had a sad about us using drop.
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SoftLoadableMachineKey {
-    Aes256GcmV1 {
-        key: Vec<u8>,
-        tag: [u8; 16],
-        iv: [u8; 16],
-    },
-}
-
-pub enum SoftHmacKey {
-    Sha256 { pkey: PKey<Private> },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SoftLoadableHmacKey {
-    Sha256V1 {
-        key: Vec<u8>,
-        tag: [u8; 16],
-        iv: [u8; 16],
-    },
 }
 
 pub enum SoftIdentityKey {
@@ -116,9 +78,7 @@ impl Hsm for SoftHsm {
             }
         };
 
-        Ok(LoadableMachineKey::Soft(
-            SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv },
-        ))
+        Ok(LoadableMachineKey::SoftAes256GcmV1 { key, tag, iv })
     }
 
     fn machine_key_load(
@@ -127,13 +87,13 @@ impl Hsm for SoftHsm {
         loadable_key: &LoadableMachineKey,
     ) -> Result<MachineKey, HsmError> {
         match loadable_key {
-            LoadableMachineKey::Soft(SoftLoadableMachineKey::Aes256GcmV1 { key, tag, iv }) => {
+            LoadableMachineKey::SoftAes256GcmV1 { key, tag, iv } => {
                 let raw_key = match auth_value {
                     AuthValue::Key256Bit { auth_key } => {
                         aes_256_gcm_decrypt(key, tag, auth_key.as_ref(), iv)?
                     }
                 };
-                Ok(MachineKey::Soft(SoftMachineKey::Aes256Gcm { key: raw_key }))
+                Ok(MachineKey::SoftAes256Gcm { key: raw_key })
             }
             LoadableMachineKey::Tpm(_) => Err(HsmError::IncorrectKeyType),
         }
@@ -153,17 +113,13 @@ impl Hsm for SoftHsm {
         })?;
 
         let (key, tag) = match mk {
-            MachineKey::Soft(SoftMachineKey::Aes256Gcm { key }) => {
+            MachineKey::SoftAes256Gcm { key } => {
                 aes_256_gcm_encrypt(buf.as_ref(), key.as_ref(), &iv)?
             }
             MachineKey::Tpm(_) => return Err(HsmError::IncorrectKeyType),
         };
 
-        Ok(LoadableHmacKey::Soft(SoftLoadableHmacKey::Sha256V1 {
-            key,
-            tag,
-            iv,
-        }))
+        Ok(LoadableHmacKey::SoftSha256V1 { key, tag, iv })
     }
 
     fn hmac_key_load(
@@ -173,8 +129,8 @@ impl Hsm for SoftHsm {
     ) -> Result<HmacKey, HsmError> {
         match (mk, loadable_key) {
             (
-                MachineKey::Soft(SoftMachineKey::Aes256Gcm { key: mk_key }),
-                LoadableHmacKey::Soft(SoftLoadableHmacKey::Sha256V1 { key, tag, iv }),
+                MachineKey::SoftAes256Gcm { key: mk_key },
+                LoadableHmacKey::SoftSha256V1 { key, tag, iv },
             ) => {
                 let raw_key = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
 
@@ -183,7 +139,7 @@ impl Hsm for SoftHsm {
                     HsmError::HmacKey
                 })?;
 
-                Ok(HmacKey::Soft(SoftHmacKey::Sha256 { pkey }))
+                Ok(HmacKey::SoftSha256 { pkey })
             }
             (_, _) => Err(HsmError::IncorrectKeyType),
         }
@@ -191,7 +147,7 @@ impl Hsm for SoftHsm {
 
     fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError> {
         match hk {
-            HmacKey::Soft(SoftHmacKey::Sha256 { pkey }) => {
+            HmacKey::SoftSha256 { pkey } => {
                 let mut signer =
                     Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
                         error!(?ossl_err);
@@ -250,7 +206,7 @@ impl HsmIdentity for SoftHsm {
                 })?;
 
                 let (key, tag) = match mk {
-                    MachineKey::Soft(SoftMachineKey::Aes256Gcm { key }) => {
+                    MachineKey::SoftAes256Gcm { key } => {
                         aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
                     }
                     MachineKey::Tpm(_) => return Err(HsmError::IncorrectKeyType),
@@ -281,7 +237,7 @@ impl HsmIdentity for SoftHsm {
                 })?;
 
                 let (key, tag) = match mk {
-                    MachineKey::Soft(SoftMachineKey::Aes256Gcm { key }) => {
+                    MachineKey::SoftAes256Gcm { key } => {
                         aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
                     }
                     MachineKey::Tpm(_) => return Err(HsmError::IncorrectKeyType),
@@ -301,7 +257,7 @@ impl HsmIdentity for SoftHsm {
     ) -> Result<Self::IdentityKey, HsmError> {
         match (mk, loadable_key) {
             (
-                MachineKey::Soft(SoftMachineKey::Aes256Gcm { key: mk_key }),
+                MachineKey::SoftAes256Gcm { key: mk_key },
                 SoftLoadableIdentityKey::Ecdsa256V1 { key, tag, iv, x509 },
             ) => {
                 let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
@@ -340,7 +296,7 @@ impl HsmIdentity for SoftHsm {
                 Ok(SoftIdentityKey::Ecdsa256 { pkey, x509 })
             }
             (
-                MachineKey::Soft(SoftMachineKey::Aes256Gcm { key: mk_key }),
+                MachineKey::SoftAes256Gcm { key: mk_key },
                 SoftLoadableIdentityKey::Rsa2048V1 { key, tag, iv, x509 },
             ) => {
                 let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
