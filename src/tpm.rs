@@ -11,6 +11,7 @@ use tss_esapi::structures::{
     PublicBuilder, PublicKeyedHashParameters, SymmetricCipherParameters, SymmetricDefinitionObject,
 };
 use tss_esapi::Context;
+use tss_esapi::TctiNameConf;
 
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 
@@ -18,15 +19,21 @@ use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 
 pub use tss_esapi::handles::KeyHandle;
 pub use tss_esapi::structures::{Private, Public};
-pub use tss_esapi::TctiNameConf;
+
+use std::str::FromStr;
 
 pub struct TpmTss {
     tpm_ctx: Context,
 }
 
 impl TpmTss {
-    pub fn new(name_conf: TctiNameConf) -> Result<Self, TpmError> {
-        Context::new(name_conf)
+    pub fn new(tcti_name: &str) -> Result<Self, TpmError> {
+        let tpm_name_config = TctiNameConf::from_str(tcti_name).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TpmTctiNameInvalid
+        })?;
+
+        Context::new(tpm_name_config)
             .map_err(|tpm_err| {
                 error!(?tpm_err);
                 TpmError::TpmContextCreate
@@ -378,21 +385,17 @@ impl Tpm for TpmTss {
 
 #[cfg(test)]
 mod tests {
-    use super::{TctiNameConf, TpmTss};
-    use std::str::FromStr;
+    use super::TpmTss;
 
     #[test]
     fn tpm_hmac_hw_bound() {
         let _ = tracing_subscriber::fmt::try_init();
 
-        let tpm_name_config =
-            TctiNameConf::from_str("device:/dev/tpmrm0").expect("Failed to get TCTI");
-
         // Create the Hsm.
-        let mut hsm_a = TpmTss::new(tpm_name_config.clone()).expect("Unable to build Tpm Context");
+        let mut hsm_a = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
         // Make a new Hsm context.
-        let mut hsm_b = TpmTss::new(tpm_name_config).expect("Unable to build Tpm Context");
+        let mut hsm_b = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
         crate::test_tpm_hmac!(hsm_a, hsm_b);
     }

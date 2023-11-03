@@ -131,6 +131,7 @@ pub enum TpmError {
     X509RequestToDer,
     X509RequestSetPublic,
 
+    TpmTctiNameInvalid,
     TpmContextCreate,
     TpmPrimaryObjectAttributesInvalid,
     TpmPrimaryPublicBuilderInvalid,
