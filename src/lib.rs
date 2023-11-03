@@ -18,6 +18,7 @@
 
 use argon2::MIN_SALT_LEN;
 use openssl::pkey::{PKey, Private};
+use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
@@ -200,6 +201,33 @@ pub enum HmacKey {
     Tpm(()),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoadableIdentityKey {
+    SoftEcdsa256V1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+        x509: Option<Vec<u8>>,
+    },
+    SoftRsa2048V1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+        x509: Option<Vec<u8>>,
+    },
+}
+
+pub enum IdentityKey {
+    SoftEcdsa256 {
+        pkey: PKey<Private>,
+        x509: Option<X509>,
+    },
+    SoftRsa2048 {
+        pkey: PKey<Private>,
+        x509: Option<X509>,
+    },
+}
+
 pub trait Hsm {
     fn machine_key_create(
         &mut self,
@@ -221,48 +249,40 @@ pub trait Hsm {
     ) -> Result<HmacKey, HsmError>;
 
     fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
-}
-
-pub trait HsmIdentity: Hsm {
-    type IdentityKey;
-    type LoadableIdentityKey;
 
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
         algorithm: KeyAlgorithm,
-    ) -> Result<Self::LoadableIdentityKey, HsmError>;
+    ) -> Result<LoadableIdentityKey, HsmError>;
 
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
-        loadable_key: &Self::LoadableIdentityKey,
-    ) -> Result<Self::IdentityKey, HsmError>;
+        loadable_key: &LoadableIdentityKey,
+    ) -> Result<IdentityKey, HsmError>;
 
-    fn identity_key_sign(
-        &mut self,
-        key: &Self::IdentityKey,
-        input: &[u8],
-    ) -> Result<Vec<u8>, HsmError>;
-
-    fn identity_key_public_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
-
-    fn identity_key_public_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
+    fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, HsmError>;
 
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
-        loadable_key: &Self::LoadableIdentityKey,
+        loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, HsmError>;
 
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
-        loadable_key: &Self::LoadableIdentityKey,
+        loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
-    ) -> Result<Self::LoadableIdentityKey, HsmError>;
+    ) -> Result<LoadableIdentityKey, HsmError>;
 
-    fn identity_key_x509_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
-    fn identity_key_x509_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError>;
+    fn identity_key_public_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_public_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_x509_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError>;
+
+    fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError>;
 }

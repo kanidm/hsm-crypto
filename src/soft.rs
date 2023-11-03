@@ -1,20 +1,19 @@
 use crate::{
-    AuthValue, HmacKey, Hsm, HsmError, HsmIdentity, KeyAlgorithm, LoadableHmacKey,
-    LoadableMachineKey, MachineKey,
+    AuthValue, HmacKey, Hsm, HsmError, IdentityKey, KeyAlgorithm, LoadableHmacKey,
+    LoadableIdentityKey, LoadableMachineKey, MachineKey,
 };
 use zeroize::Zeroizing;
 
 use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
-use openssl::pkey::{PKey, Private};
+use openssl::pkey::PKey;
 use openssl::rand::rand_bytes;
 use openssl::rsa::Rsa;
 use openssl::sign::Signer;
 use openssl::symm::{Cipher, Crypter, Mode};
 use openssl::x509::{X509NameBuilder, X509ReqBuilder, X509};
 
-use serde::{Deserialize, Serialize};
 use tracing::error;
 
 #[derive(Default)]
@@ -24,33 +23,6 @@ impl SoftHsm {
     pub fn new() -> Self {
         Self::default()
     }
-}
-
-pub enum SoftIdentityKey {
-    Rsa2048 {
-        pkey: PKey<Private>,
-        x509: Option<X509>,
-    },
-    Ecdsa256 {
-        pkey: PKey<Private>,
-        x509: Option<X509>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SoftLoadableIdentityKey {
-    Rsa2048V1 {
-        key: Vec<u8>,
-        tag: [u8; 16],
-        iv: [u8; 16],
-        x509: Option<Vec<u8>>,
-    },
-    Ecdsa256V1 {
-        key: Vec<u8>,
-        tag: [u8; 16],
-        iv: [u8; 16],
-        x509: Option<Vec<u8>>,
-    },
 }
 
 impl Hsm for SoftHsm {
@@ -167,17 +139,12 @@ impl Hsm for SoftHsm {
             HmacKey::Tpm(_) => Err(HsmError::IncorrectKeyType),
         }
     }
-}
-
-impl HsmIdentity for SoftHsm {
-    type IdentityKey = SoftIdentityKey;
-    type LoadableIdentityKey = SoftLoadableIdentityKey;
 
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
         algorithm: KeyAlgorithm,
-    ) -> Result<Self::LoadableIdentityKey, HsmError> {
+    ) -> Result<LoadableIdentityKey, HsmError> {
         match algorithm {
             KeyAlgorithm::Ecdsa256 => {
                 let ecgroup =
@@ -214,7 +181,7 @@ impl HsmIdentity for SoftHsm {
 
                 let x509 = None;
 
-                Ok(SoftLoadableIdentityKey::Ecdsa256V1 { key, tag, iv, x509 })
+                Ok(LoadableIdentityKey::SoftEcdsa256V1 { key, tag, iv, x509 })
             }
             KeyAlgorithm::Rsa2048 => {
                 let rsa = Rsa::generate(2048).map_err(|ossl_err| {
@@ -245,7 +212,7 @@ impl HsmIdentity for SoftHsm {
 
                 let x509 = None;
 
-                Ok(SoftLoadableIdentityKey::Rsa2048V1 { key, tag, iv, x509 })
+                Ok(LoadableIdentityKey::SoftRsa2048V1 { key, tag, iv, x509 })
             }
         }
     }
@@ -253,12 +220,12 @@ impl HsmIdentity for SoftHsm {
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
-        loadable_key: &Self::LoadableIdentityKey,
-    ) -> Result<Self::IdentityKey, HsmError> {
+        loadable_key: &LoadableIdentityKey,
+    ) -> Result<IdentityKey, HsmError> {
         match (mk, loadable_key) {
             (
                 MachineKey::SoftAes256Gcm { key: mk_key },
-                SoftLoadableIdentityKey::Ecdsa256V1 { key, tag, iv, x509 },
+                LoadableIdentityKey::SoftEcdsa256V1 { key, tag, iv, x509 },
             ) => {
                 let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
 
@@ -293,11 +260,11 @@ impl HsmIdentity for SoftHsm {
                     None => None,
                 };
 
-                Ok(SoftIdentityKey::Ecdsa256 { pkey, x509 })
+                Ok(IdentityKey::SoftEcdsa256 { pkey, x509 })
             }
             (
                 MachineKey::SoftAes256Gcm { key: mk_key },
-                SoftLoadableIdentityKey::Rsa2048V1 { key, tag, iv, x509 },
+                LoadableIdentityKey::SoftRsa2048V1 { key, tag, iv, x509 },
             ) => {
                 let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
 
@@ -332,16 +299,16 @@ impl HsmIdentity for SoftHsm {
                     None => None,
                 };
 
-                Ok(SoftIdentityKey::Rsa2048 { pkey, x509 })
+                Ok(IdentityKey::SoftRsa2048 { pkey, x509 })
             }
             (_, _) => Err(HsmError::IncorrectKeyType),
         }
     }
 
-    fn identity_key_public_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError> {
+    fn identity_key_public_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
         match key {
-            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
-            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
                 pkey.public_key_to_der().map_err(|ossl_err| {
                     error!(?ossl_err);
                     HsmError::IdentityKeyPublicToDer
@@ -350,10 +317,10 @@ impl HsmIdentity for SoftHsm {
         }
     }
 
-    fn identity_key_public_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError> {
+    fn identity_key_public_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
         match key {
-            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
-            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
                 pkey.public_key_to_pem().map_err(|ossl_err| {
                     error!(?ossl_err);
                     HsmError::IdentityKeyPublicToPem
@@ -362,13 +329,13 @@ impl HsmIdentity for SoftHsm {
         }
     }
 
-    fn identity_key_x509_as_pem(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError> {
+    fn identity_key_x509_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
         match key {
-            SoftIdentityKey::Ecdsa256 {
+            IdentityKey::SoftEcdsa256 {
                 pkey: _,
                 x509: Some(x509),
             }
-            | SoftIdentityKey::Rsa2048 {
+            | IdentityKey::SoftRsa2048 {
                 pkey: _,
                 x509: Some(x509),
             } => x509.to_pem().map_err(|ossl_err| {
@@ -379,13 +346,13 @@ impl HsmIdentity for SoftHsm {
         }
     }
 
-    fn identity_key_x509_as_der(&mut self, key: &Self::IdentityKey) -> Result<Vec<u8>, HsmError> {
+    fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
         match key {
-            SoftIdentityKey::Ecdsa256 {
+            IdentityKey::SoftEcdsa256 {
                 pkey: _,
                 x509: Some(x509),
             }
-            | SoftIdentityKey::Rsa2048 {
+            | IdentityKey::SoftRsa2048 {
                 pkey: _,
                 x509: Some(x509),
             } => x509.to_der().map_err(|ossl_err| {
@@ -396,14 +363,10 @@ impl HsmIdentity for SoftHsm {
         }
     }
 
-    fn identity_key_sign(
-        &mut self,
-        key: &Self::IdentityKey,
-        input: &[u8],
-    ) -> Result<Vec<u8>, HsmError> {
+    fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, HsmError> {
         let mut signer = match key {
-            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
-            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
                 Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
                     error!(?ossl_err);
                     HsmError::IdentityKeyInvalidForSigning
@@ -420,7 +383,7 @@ impl HsmIdentity for SoftHsm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
-        loadable_key: &Self::LoadableIdentityKey,
+        loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, HsmError> {
         let id_key = self.identity_key_load(mk, loadable_key)?;
@@ -451,8 +414,8 @@ impl HsmIdentity for SoftHsm {
             })?;
 
         match id_key {
-            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
-            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
                 req_builder.set_pubkey(&pkey).map_err(|ossl_err| {
                     error!(?ossl_err);
                     HsmError::X509RequestSetPublic
@@ -476,9 +439,9 @@ impl HsmIdentity for SoftHsm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
-        loadable_key: &Self::LoadableIdentityKey,
+        loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
-    ) -> Result<Self::LoadableIdentityKey, HsmError> {
+    ) -> Result<LoadableIdentityKey, HsmError> {
         let id_key = self.identity_key_load(mk, loadable_key)?;
 
         // Verify the certificate matches our key
@@ -493,8 +456,8 @@ impl HsmIdentity for SoftHsm {
         })?;
 
         match id_key {
-            SoftIdentityKey::Ecdsa256 { pkey, x509: _ }
-            | SoftIdentityKey::Rsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
                 if !pkey.public_eq(&certificate_pkey) {
                     return Err(HsmError::X509KeyMismatch);
                 }
@@ -507,10 +470,10 @@ impl HsmIdentity for SoftHsm {
         let mut cloned_key = loadable_key.clone();
 
         match &mut cloned_key {
-            SoftLoadableIdentityKey::Ecdsa256V1 { ref mut x509, .. } => {
+            LoadableIdentityKey::SoftEcdsa256V1 { ref mut x509, .. } => {
                 *x509 = Some(certificate_der.to_vec());
             }
-            SoftLoadableIdentityKey::Rsa2048V1 { ref mut x509, .. } => {
+            LoadableIdentityKey::SoftRsa2048V1 { ref mut x509, .. } => {
                 *x509 = Some(certificate_der.to_vec());
             }
         };
