@@ -1,6 +1,6 @@
 use crate::{
-    AuthValue, HmacKey, Hsm, HsmError, IdentityKey, KeyAlgorithm, LoadableHmacKey,
-    LoadableIdentityKey, LoadableMachineKey, MachineKey,
+    AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
+    LoadableMachineKey, MachineKey, Tpm, TpmError,
 };
 // use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -20,23 +20,23 @@ pub use tss_esapi::handles::KeyHandle;
 pub use tss_esapi::structures::{Private, Public};
 pub use tss_esapi::TctiNameConf;
 
-pub struct TpmHsm {
+pub struct TpmTss {
     tpm_ctx: Context,
 }
 
-impl TpmHsm {
-    pub fn new(name_conf: TctiNameConf) -> Result<Self, HsmError> {
+impl TpmTss {
+    pub fn new(name_conf: TctiNameConf) -> Result<Self, TpmError> {
         Context::new(name_conf)
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmContextCreate
+                TpmError::TpmContextCreate
             })
-            .map(|tpm_ctx| TpmHsm { tpm_ctx })
+            .map(|tpm_ctx| TpmTss { tpm_ctx })
     }
 }
 
-impl TpmHsm {
-    fn setup_owner_primary(&mut self) -> Result<CreatePrimaryKeyResult, HsmError> {
+impl TpmTss {
+    fn setup_owner_primary(&mut self) -> Result<CreatePrimaryKeyResult, TpmError> {
         let object_attributes = ObjectAttributesBuilder::new()
             .with_fixed_tpm(true)
             .with_fixed_parent(true)
@@ -48,7 +48,7 @@ impl TpmHsm {
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmPrimaryObjectAttributesInvalid
+                TpmError::TpmPrimaryObjectAttributesInvalid
             })?;
 
         let primary_pub = PublicBuilder::new()
@@ -62,7 +62,7 @@ impl TpmHsm {
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmPrimaryPublicBuilderInvalid
+                TpmError::TpmPrimaryPublicBuilderInvalid
             })?;
 
         self.tpm_ctx
@@ -74,16 +74,16 @@ impl TpmHsm {
             })
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmPrimaryCreate
+                TpmError::TpmPrimaryCreate
             })
     }
 }
 
-impl Hsm for TpmHsm {
+impl Tpm for TpmTss {
     fn machine_key_create(
         &mut self,
         auth_value: &AuthValue,
-    ) -> Result<LoadableMachineKey, HsmError> {
+    ) -> Result<LoadableMachineKey, TpmError> {
         // Setup the primary key.
         let primary = self.setup_owner_primary()?;
 
@@ -94,7 +94,7 @@ impl Hsm for TpmHsm {
             .and_then(|random| Digest::try_from(random.as_slice()))
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmEntropy
+                TpmError::TpmEntropy
             })?;
 
         let object_attributes = ObjectAttributesBuilder::new()
@@ -109,7 +109,7 @@ impl Hsm for TpmHsm {
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmMachineKeyObjectAttributesInvalid
+                TpmError::TpmMachineKeyObjectAttributesInvalid
             })?;
 
         let key_pub = PublicBuilder::new()
@@ -123,7 +123,7 @@ impl Hsm for TpmHsm {
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmMachineKeyBuilderInvalid
+                TpmError::TpmMachineKeyBuilderInvalid
             })?;
 
         let tpm_auth_value = match auth_value {
@@ -131,7 +131,7 @@ impl Hsm for TpmHsm {
         }
         .map_err(|tpm_err| {
             error!(?tpm_err);
-            HsmError::TpmAuthValueInvalid
+            TpmError::TpmAuthValueInvalid
         })?;
 
         self.tpm_ctx
@@ -161,7 +161,7 @@ impl Hsm for TpmHsm {
             )
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmMachineKeyCreate
+                TpmError::TpmMachineKeyCreate
             })
 
         // Remember this isn't loaded and can't be used yet!
@@ -171,12 +171,12 @@ impl Hsm for TpmHsm {
         &mut self,
         auth_value: &AuthValue,
         loadable_key: &LoadableMachineKey,
-    ) -> Result<MachineKey, HsmError> {
+    ) -> Result<MachineKey, TpmError> {
         let (private, public) = match loadable_key {
             LoadableMachineKey::TpmAes128CfbV1 { private, public } => {
                 (private.clone(), public.clone())
             }
-            _ => return Err(HsmError::IncorrectKeyType),
+            _ => return Err(TpmError::IncorrectKeyType),
         };
 
         // Was this cleared in the former stages?
@@ -187,7 +187,7 @@ impl Hsm for TpmHsm {
         }
         .map_err(|tpm_err| {
             error!(?tpm_err);
-            HsmError::TpmAuthValueInvalid
+            TpmError::TpmAuthValueInvalid
         })?;
 
         self.tpm_ctx
@@ -206,14 +206,14 @@ impl Hsm for TpmHsm {
             .map(|key_handle| MachineKey::Tpm { key_handle })
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmMachineKeyLoad
+                TpmError::TpmMachineKeyLoad
             })
     }
 
-    fn hmac_key_create(&mut self, mk: &MachineKey) -> Result<LoadableHmacKey, HsmError> {
+    fn hmac_key_create(&mut self, mk: &MachineKey) -> Result<LoadableHmacKey, TpmError> {
         let mk_key_handle = match mk {
             MachineKey::Tpm { key_handle } => key_handle.clone(),
-            _ => return Err(HsmError::IncorrectKeyType),
+            _ => return Err(TpmError::IncorrectKeyType),
         };
 
         let unique_key_identifier = self
@@ -222,7 +222,7 @@ impl Hsm for TpmHsm {
             .and_then(|random| Digest::try_from(random.as_slice()))
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmEntropy
+                TpmError::TpmEntropy
             })?;
 
         let object_attributes = ObjectAttributesBuilder::new()
@@ -235,7 +235,7 @@ impl Hsm for TpmHsm {
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmHmacKeyObjectAttributesInvalid
+                TpmError::TpmHmacKeyObjectAttributesInvalid
             })?;
 
         let key_pub = PublicBuilder::new()
@@ -249,7 +249,7 @@ impl Hsm for TpmHsm {
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmHmacKeyBuilderInvalid
+                TpmError::TpmHmacKeyBuilderInvalid
             })?;
 
         self.tpm_ctx
@@ -267,7 +267,7 @@ impl Hsm for TpmHsm {
             )
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmHmacKeyCreate
+                TpmError::TpmHmacKeyCreate
             })
     }
 
@@ -275,15 +275,15 @@ impl Hsm for TpmHsm {
         &mut self,
         mk: &MachineKey,
         loadable_key: &LoadableHmacKey,
-    ) -> Result<HmacKey, HsmError> {
+    ) -> Result<HmacKey, TpmError> {
         let (private, public) = match loadable_key {
             LoadableHmacKey::TpmSha256V1 { private, public } => (private.clone(), public.clone()),
-            _ => return Err(HsmError::IncorrectKeyType),
+            _ => return Err(TpmError::IncorrectKeyType),
         };
 
         let mk_key_handle = match mk {
             MachineKey::Tpm { key_handle } => key_handle.clone(),
-            _ => return Err(HsmError::IncorrectKeyType),
+            _ => return Err(TpmError::IncorrectKeyType),
         };
 
         self.tpm_ctx
@@ -291,19 +291,19 @@ impl Hsm for TpmHsm {
             .map(|key_handle| HmacKey::TpmSha256 { key_handle })
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmHmacKeyLoad
+                TpmError::TpmHmacKeyLoad
             })
     }
 
-    fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, HsmError> {
+    fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
         let (hk_key_handle, hk_alg) = match hk {
             HmacKey::TpmSha256 { key_handle } => (key_handle.clone(), HashingAlgorithm::Sha256),
-            _ => return Err(HsmError::IncorrectKeyType),
+            _ => return Err(TpmError::IncorrectKeyType),
         };
 
         let data_buffer = MaxBuffer::try_from(input).map_err(|tpm_err| {
             error!(?tpm_err);
-            HsmError::TpmHmacInputTooLarge
+            TpmError::TpmHmacInputTooLarge
         })?;
 
         self.tpm_ctx
@@ -313,7 +313,7 @@ impl Hsm for TpmHsm {
             .map(|digest| digest.value().to_vec())
             .map_err(|tpm_err| {
                 error!(?tpm_err);
-                HsmError::TpmHmacSign
+                TpmError::TpmHmacSign
             })
     }
 
@@ -321,24 +321,24 @@ impl Hsm for TpmHsm {
         &mut self,
         _mk: &MachineKey,
         _algorithm: KeyAlgorithm,
-    ) -> Result<LoadableIdentityKey, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    ) -> Result<LoadableIdentityKey, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
     fn identity_key_load(
         &mut self,
         _mk: &MachineKey,
         _loadable_key: &LoadableIdentityKey,
-    ) -> Result<IdentityKey, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    ) -> Result<IdentityKey, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
     fn identity_key_sign(
         &mut self,
         _key: &IdentityKey,
         _input: &[u8],
-    ) -> Result<Vec<u8>, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    ) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
     fn identity_key_certificate_request(
@@ -346,8 +346,8 @@ impl Hsm for TpmHsm {
         _mk: &MachineKey,
         _loadable_key: &LoadableIdentityKey,
         _cn: &str,
-    ) -> Result<Vec<u8>, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    ) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
     fn identity_key_associate_certificate(
@@ -355,33 +355,31 @@ impl Hsm for TpmHsm {
         _mk: &MachineKey,
         _loadable_key: &LoadableIdentityKey,
         _certificate_der: &[u8],
-    ) -> Result<LoadableIdentityKey, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    ) -> Result<LoadableIdentityKey, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
-    fn identity_key_public_as_der(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    fn identity_key_public_as_der(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
-    fn identity_key_public_as_pem(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    fn identity_key_public_as_pem(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
-    fn identity_key_x509_as_pem(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    fn identity_key_x509_as_pem(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 
-    fn identity_key_x509_as_der(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, HsmError> {
-        Err(HsmError::TpmOperationUnsupported)
+    fn identity_key_x509_as_der(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TctiNameConf, TpmHsm};
-    use crate::{AuthValue, Hsm};
+    use super::{TctiNameConf, TpmTss};
     use std::str::FromStr;
-    use tracing::trace;
 
     #[test]
     fn tpm_hmac_hw_bound() {
@@ -391,63 +389,11 @@ mod tests {
             TctiNameConf::from_str("device:/dev/tpmrm0").expect("Failed to get TCTI");
 
         // Create the Hsm.
-        let mut hsm = TpmHsm::new(tpm_name_config.clone()).expect("Unable to build Tpm Context");
-
-        // Create a new random auth_value.
-        let auth_value = AuthValue::new_random().expect("Failed to generate new random secret");
-
-        // Request a new machine-key-context. This key "owns" anything
-        // created underneath it.
-        let loadable_machine_key = hsm
-            .machine_key_create(&auth_value)
-            .expect("Unable to create new machine key");
-
-        trace!(?loadable_machine_key);
-
-        let machine_key = hsm
-            .machine_key_load(&auth_value, &loadable_machine_key)
-            .expect("Unable to load machine key");
-
-        // from that ctx, create a hmac key.
-        let loadable_hmac_key = hsm
-            .hmac_key_create(&machine_key)
-            .expect("Unable to create new hmac key");
-
-        trace!(?loadable_hmac_key);
-
-        let hmac_key = hsm
-            .hmac_key_load(&machine_key, &loadable_hmac_key)
-            .expect("Unable to load hmac key");
-
-        // do a hmac.
-        let output_1 = hsm
-            .hmac(&hmac_key, &[0, 1, 2, 3])
-            .expect("Unable to perform hmac");
-
-        // destroy the Hsm
-        drop(hmac_key);
-        drop(machine_key);
-        drop(hsm);
+        let mut hsm_a = TpmTss::new(tpm_name_config.clone()).expect("Unable to build Tpm Context");
 
         // Make a new Hsm context.
-        let mut hsm = TpmHsm::new(tpm_name_config).expect("Unable to build Tpm Context");
+        let mut hsm_b = TpmTss::new(tpm_name_config).expect("Unable to build Tpm Context");
 
-        // Load the contexts.
-        let machine_key = hsm
-            .machine_key_load(&auth_value, &loadable_machine_key)
-            .expect("Unable to load machine key");
-
-        // Load the keys.
-        let hmac_key = hsm
-            .hmac_key_load(&machine_key, &loadable_hmac_key)
-            .expect("Unable to load hmac key");
-
-        // Do another hmac
-        let output_2 = hsm
-            .hmac(&hmac_key, &[0, 1, 2, 3])
-            .expect("Unable to perform hmac");
-
-        // It should be the same.
-        assert_eq!(output_1, output_2);
+        crate::test_tpm_hmac!(hsm_a, hsm_b);
     }
 }
