@@ -67,7 +67,7 @@ impl Hsm for SoftHsm {
                 };
                 Ok(MachineKey::SoftAes256Gcm { key: raw_key })
             }
-            LoadableMachineKey::Tpm(_) => Err(HsmError::IncorrectKeyType),
+            LoadableMachineKey::TpmAes128CfbV1 { .. } => Err(HsmError::IncorrectKeyType),
         }
     }
 
@@ -88,7 +88,7 @@ impl Hsm for SoftHsm {
             MachineKey::SoftAes256Gcm { key } => {
                 aes_256_gcm_encrypt(buf.as_ref(), key.as_ref(), &iv)?
             }
-            MachineKey::Tpm(_) => return Err(HsmError::IncorrectKeyType),
+            MachineKey::Tpm { .. } => return Err(HsmError::IncorrectKeyType),
         };
 
         Ok(LoadableHmacKey::SoftSha256V1 { key, tag, iv })
@@ -136,7 +136,7 @@ impl Hsm for SoftHsm {
                     HsmError::HmacSign
                 })
             }
-            HmacKey::Tpm(_) => Err(HsmError::IncorrectKeyType),
+            HmacKey::TpmSha256 { .. } => Err(HsmError::IncorrectKeyType),
         }
     }
 
@@ -176,7 +176,7 @@ impl Hsm for SoftHsm {
                     MachineKey::SoftAes256Gcm { key } => {
                         aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
                     }
-                    MachineKey::Tpm(_) => return Err(HsmError::IncorrectKeyType),
+                    MachineKey::Tpm { .. } => return Err(HsmError::IncorrectKeyType),
                 };
 
                 let x509 = None;
@@ -207,7 +207,7 @@ impl Hsm for SoftHsm {
                     MachineKey::SoftAes256Gcm { key } => {
                         aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
                     }
-                    MachineKey::Tpm(_) => return Err(HsmError::IncorrectKeyType),
+                    MachineKey::Tpm { .. } => return Err(HsmError::IncorrectKeyType),
                 };
 
                 let x509 = None;
@@ -563,7 +563,7 @@ fn aes_256_gcm_decrypt(
 #[cfg(test)]
 mod tests {
     use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, KeyAlgorithm, SoftHsm};
-    use crate::{AuthValue, Hsm, HsmIdentity};
+    use crate::{AuthValue, Hsm};
     use openssl::asn1::Asn1Time;
     use openssl::bn::BigNum;
     use openssl::ec::{EcGroup, EcKey};

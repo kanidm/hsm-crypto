@@ -151,11 +151,14 @@ pub enum HsmError {
 
     TpmHmacInputTooLarge,
 
+    TpmOperationUnsupported,
+
     Entropy,
     IncorrectKeyType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "tpm"), derive(Serialize, Deserialize))]
 pub enum LoadableMachineKey {
     SoftAes256GcmV1 {
         key: Vec<u8>,
@@ -163,9 +166,12 @@ pub enum LoadableMachineKey {
         iv: [u8; 16],
     },
     #[cfg(feature = "tpm")]
-    Tpm(tpm::TpmLoadableMachineKey),
+    TpmAes128CfbV1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
     #[cfg(not(feature = "tpm"))]
-    Tpm(()),
+    TpmAes128CfbV1 { private: (), public: () },
 }
 
 pub enum MachineKey {
@@ -173,12 +179,17 @@ pub enum MachineKey {
         key: Zeroizing<Vec<u8>>,
     },
     #[cfg(feature = "tpm")]
-    Tpm(tpm::TpmMachineKey),
+    Tpm {
+        key_handle: tpm::KeyHandle,
+    },
     #[cfg(not(feature = "tpm"))]
-    Tpm(()),
+    Tpm {
+        key_handle: (),
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "tpm"), derive(Serialize, Deserialize))]
 pub enum LoadableHmacKey {
     SoftSha256V1 {
         key: Vec<u8>,
@@ -186,7 +197,10 @@ pub enum LoadableHmacKey {
         iv: [u8; 16],
     },
     #[cfg(feature = "tpm")]
-    Tpm(tpm::TpmLoadableHmacKey),
+    TpmSha256V1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
     #[cfg(not(feature = "tpm"))]
     Tpm(()),
 }
@@ -196,9 +210,13 @@ pub enum HmacKey {
         pkey: PKey<Private>,
     },
     #[cfg(feature = "tpm")]
-    Tpm(tpm::TpmHmacKey),
+    TpmSha256 {
+        key_handle: tpm::KeyHandle,
+    },
     #[cfg(not(feature = "tpm"))]
-    Tpm(()),
+    TpmSha256 {
+        key_handle: (),
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
