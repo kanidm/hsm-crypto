@@ -5,12 +5,12 @@ use crate::{
 use zeroize::Zeroizing;
 
 use openssl::ec::{EcGroup, EcKey};
-use openssl::hash::MessageDigest;
+use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rand::rand_bytes;
 use openssl::rsa::Rsa;
-use openssl::sign::Signer;
+use openssl::sign::{Signer, Verifier};
 use openssl::symm::{Cipher, Crypter, Mode};
 use openssl::x509::{X509NameBuilder, X509ReqBuilder, X509};
 
@@ -305,6 +305,19 @@ impl Tpm for SoftTpm {
         }
     }
 
+    /// Aka key fingerprint
+    fn identity_key_id(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        let der = self.identity_key_public_as_der(key)?;
+
+        let digest = MessageDigest::sha256();
+        hash(digest, &der)
+            .map(|bytes| bytes.to_vec())
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::IdentityKeyDigest
+            })
+    }
+
     fn identity_key_public_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
         match key {
             IdentityKey::SoftEcdsa256 { pkey, x509: _ }
@@ -378,6 +391,30 @@ impl Tpm for SoftTpm {
             error!(?ossl_err);
             TpmError::IdentityKeySignature
         })
+    }
+
+    fn identity_key_verify(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, TpmError> {
+        let mut verifier = match key {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
+                Verifier::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::IdentityKeyInvalidForVerification
+                })?
+            }
+        };
+
+        verifier
+            .verify_oneshot(signature, input)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::IdentityKeyVerification
+            })
     }
 
     fn identity_key_certificate_request(

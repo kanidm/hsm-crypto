@@ -340,6 +340,10 @@ impl Tpm for TpmTss {
         Err(TpmError::TpmOperationUnsupported)
     }
 
+    fn identity_key_id(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
+    }
+
     fn identity_key_sign(
         &mut self,
         _key: &IdentityKey,
