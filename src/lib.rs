@@ -35,6 +35,7 @@ pub enum AuthValue {
     Key256Bit { auth_key: Zeroizing<[u8; 32]> },
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum KeyAlgorithm {
     Rsa2048,
     Ecdsa256,
@@ -109,10 +110,13 @@ pub enum TpmError {
     EcKeyPrivateToDer,
     EcKeyFromDer,
     EcKeyToPrivateKey,
+    IdentityKeyDigest,
     IdentityKeyPublicToDer,
     IdentityKeyPublicToPem,
     IdentityKeyInvalidForSigning,
+    IdentityKeyInvalidForVerification,
     IdentityKeySignature,
+    IdentityKeyVerification,
     IdentityKeyX509ToPem,
     IdentityKeyX509ToDer,
     IdentityKeyX509Missing,
@@ -247,6 +251,15 @@ pub enum IdentityKey {
     },
 }
 
+impl IdentityKey {
+    pub fn alg(&self) -> KeyAlgorithm {
+        match self {
+            IdentityKey::SoftEcdsa256 { .. } => KeyAlgorithm::Ecdsa256,
+            IdentityKey::SoftRsa2048 { .. } => KeyAlgorithm::Rsa2048,
+        }
+    }
+}
+
 pub trait Tpm {
     fn machine_key_create(
         &mut self,
@@ -281,7 +294,16 @@ pub trait Tpm {
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError>;
 
+    fn identity_key_id(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError>;
+
     fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError>;
+
+    fn identity_key_verify(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, TpmError>;
 
     fn identity_key_certificate_request(
         &mut self,
@@ -433,7 +455,6 @@ mod tests {
                 .expect("Unable to get id key public pem");
 
             // Rehydrate the der to a public key.
-
             let public_key = PKey::public_key_from_der(&id_key_public_der).expect("Invalid DER");
 
             let input = "test string";
@@ -441,6 +462,12 @@ mod tests {
                 .identity_key_sign(&id_key, input.as_bytes())
                 .expect("Unable to sign input");
 
+            // Internal verification
+            assert!($tpm
+                .identity_key_verify(&id_key, input.as_bytes(), signature.as_slice())
+                .expect("Unable to sign input"));
+
+            // External verification.
             let mut verifier = Verifier::new(MessageDigest::sha256(), &public_key)
                 .expect("Unable to setup verifier.");
 
