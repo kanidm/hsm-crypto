@@ -65,12 +65,11 @@ impl AuthValue {
 
         Ok(AuthValue::Key256Bit { auth_key })
     }
-}
 
-impl TryFrom<&[u8]> for AuthValue {
-    type Error = TpmError;
-
-    fn try_from(cleartext: &[u8]) -> Result<Self, Self::Error> {
+    /// Derive an auth value from input bytes. This value must be at least 24 bytes in length.
+    ///
+    /// The key derivation is performed with Argon2id.
+    pub fn derive_from_bytes(cleartext: &[u8]) -> Result<Self, TpmError> {
         use argon2::{Algorithm, Argon2, Params, Version};
 
         let mut auth_key = Zeroizing::new([0; 32]);
@@ -100,15 +99,29 @@ impl TryFrom<&[u8]> for AuthValue {
 
         Ok(AuthValue::Key256Bit { auth_key })
     }
+
+    /// Derive an auth value from input hex. The input hex string must contain at least
+    /// 24 bytes (the string is at least 48 hex chars)
+    pub fn derive_from_hex(cleartext: &str) -> Result<Self, TpmError> {
+        hex::decode(cleartext)
+            .map_err(|_| TpmError::AuthValueInvalidHexInput)
+            .and_then(|bytes| Self::derive_from_bytes(bytes.as_slice()))
+    }
+}
+
+impl TryFrom<&[u8]> for AuthValue {
+    type Error = TpmError;
+
+    fn try_from(cleartext: &[u8]) -> Result<Self, Self::Error> {
+        Self::derive_from_bytes(cleartext)
+    }
 }
 
 impl FromStr for AuthValue {
     type Err = TpmError;
 
     fn from_str(cleartext: &str) -> Result<Self, Self::Err> {
-        hex::decode(cleartext)
-            .map_err(|_| TpmError::AuthValueInvalidHexInput)
-            .and_then(|bytes| Self::try_from(bytes.as_slice()))
+        Self::derive_from_hex(cleartext)
     }
 }
 
