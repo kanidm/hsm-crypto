@@ -166,7 +166,11 @@ pub enum TpmError {
     X509RequestSetPublic,
 
     TpmTctiNameInvalid,
+    TpmAuthSession,
     TpmContextCreate,
+    TpmContextFlushObject,
+    TpmContextSave,
+    TpmContextLoad,
     TpmPrimaryObjectAttributesInvalid,
     TpmPrimaryPublicBuilderInvalid,
     TpmPrimaryCreate,
@@ -246,7 +250,7 @@ pub enum HmacKey {
     },
     #[cfg(feature = "tpm")]
     TpmSha256 {
-        key_handle: tpm::KeyHandle,
+        key_context: tpm::TpmsContext,
     },
     #[cfg(not(feature = "tpm"))]
     TpmSha256 {
@@ -430,8 +434,14 @@ mod tests {
                 .hmac(&hmac_key, &[0, 1, 2, 3])
                 .expect("Unable to perform hmac");
 
+            // Show the context load/flush is okay.
+            let output_3 = $tpm_b
+                .hmac(&hmac_key, &[0, 1, 2, 3])
+                .expect("Unable to perform hmac");
+
             // It should be the same.
             assert_eq!(output_1, output_2);
+            assert_eq!(output_1, output_3);
         };
     }
 
