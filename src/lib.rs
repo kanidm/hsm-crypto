@@ -42,7 +42,21 @@ pub enum KeyAlgorithm {
 }
 
 impl AuthValue {
-    pub fn new_random() -> Result<Self, TpmError> {
+    fn random_key() -> Result<Zeroizing<[u8; 24]>, TpmError> {
+        let mut auth_key = Zeroizing::new([0; 24]);
+        openssl::rand::rand_bytes(auth_key.as_mut()).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::Entropy
+        })?;
+        Ok(auth_key)
+    }
+
+    pub fn generate() -> Result<String, TpmError> {
+        let ak = Self::random_key()?;
+        Ok(hex::encode(&ak))
+    }
+
+    pub fn ephemeral() -> Result<Self, TpmError> {
         let mut auth_key = Zeroizing::new([0; 32]);
         openssl::rand::rand_bytes(auth_key.as_mut()).map_err(|ossl_err| {
             error!(?ossl_err);
@@ -92,12 +106,15 @@ impl FromStr for AuthValue {
     type Err = TpmError;
 
     fn from_str(cleartext: &str) -> Result<Self, Self::Err> {
-        Self::try_from(cleartext.as_bytes())
+        hex::decode(cleartext)
+            .map_err(|_| TpmError::AuthValueInvalidHexInput)
+            .and_then(|bytes| Self::try_from(bytes.as_slice()))
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum TpmError {
+    AuthValueInvalidHexInput,
     AuthValueTooShort,
     AuthValueDerivation,
     Aes256GcmConfig,
@@ -350,7 +367,7 @@ mod tests {
             let _ = tracing_subscriber::fmt::try_init();
 
             // Create a new random auth_value.
-            let auth_value = AuthValue::new_random().expect("Failed to generate new random secret");
+            let auth_value = AuthValue::ephemeral().expect("Failed to generate new random secret");
 
             // Request a new machine-key-context. This key "owns" anything
             // created underneath it.
@@ -417,8 +434,9 @@ mod tests {
 
             let _ = tracing_subscriber::fmt::try_init();
 
-            let auth_value = AuthValue::from_str("Ohquiech9jis7Poo8Di7eth3")
-                .expect("Unable to create auth value");
+            let auth_str = AuthValue::generate().expect("Failed to create hex pin");
+
+            let auth_value = AuthValue::from_str(&auth_str).expect("Unable to create auth value");
 
             // Request a new machine-key-context. This key "owns" anything
             // created underneath it.
@@ -483,13 +501,11 @@ mod tests {
     macro_rules! test_tpm_identity_csr {
         ( $tpm:expr, $alg:expr ) => {
             use crate::{AuthValue, Tpm};
-            use std::str::FromStr;
             use tracing::trace;
 
             let _ = tracing_subscriber::fmt::try_init();
 
-            let auth_value = AuthValue::from_str("Ohquiech9jis7Poo8Di7eth3")
-                .expect("Unable to create auth value");
+            let auth_value = AuthValue::ephemeral().expect("Unable to create auth value");
 
             // Request a new machine-key-context. This key "owns" anything
             // created underneath it.

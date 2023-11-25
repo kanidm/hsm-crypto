@@ -352,6 +352,15 @@ impl Tpm for TpmTss {
         Err(TpmError::TpmOperationUnsupported)
     }
 
+    fn identity_key_verify(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
+    }
+
     fn identity_key_certificate_request(
         &mut self,
         _mk: &MachineKey,
