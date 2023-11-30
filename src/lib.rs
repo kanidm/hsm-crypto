@@ -358,10 +358,10 @@ pub trait Tpm {
     fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError>;
 }
 
-pub struct BoxedDynTpm(Box<dyn Tpm>);
+pub struct BoxedDynTpm(Box<dyn Tpm + 'static + Send>);
 
 impl BoxedDynTpm {
-    pub fn new<T: Tpm + 'static>(t: T) -> Self {
+    pub fn new<T: Tpm + 'static + Send>(t: T) -> Self {
         BoxedDynTpm(Box::new(t))
     }
 }
