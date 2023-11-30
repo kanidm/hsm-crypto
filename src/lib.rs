@@ -358,6 +358,116 @@ pub trait Tpm {
     fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError>;
 }
 
+pub struct BoxedDynTpm(Box<dyn Tpm>);
+
+impl BoxedDynTpm {
+    pub fn new<T: Tpm + 'static>(t: T) -> Self {
+        BoxedDynTpm(Box::new(t))
+    }
+}
+
+impl Tpm for BoxedDynTpm {
+    fn machine_key_create(
+        &mut self,
+        auth_value: &AuthValue,
+    ) -> Result<LoadableMachineKey, TpmError> {
+        self.0.machine_key_create(auth_value)
+    }
+
+    fn machine_key_load(
+        &mut self,
+        auth_value: &AuthValue,
+        exported_key: &LoadableMachineKey,
+    ) -> Result<MachineKey, TpmError> {
+        self.0.machine_key_load(auth_value, exported_key)
+    }
+
+    fn hmac_key_create(&mut self, mk: &MachineKey) -> Result<LoadableHmacKey, TpmError> {
+        self.0.hmac_key_create(mk)
+    }
+
+    fn hmac_key_load(
+        &mut self,
+        mk: &MachineKey,
+        exported_key: &LoadableHmacKey,
+    ) -> Result<HmacKey, TpmError> {
+        self.0.hmac_key_load(mk, exported_key)
+    }
+
+    fn hmac(&mut self, hk: &HmacKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
+        self.0.hmac(hk, input)
+    }
+
+    fn identity_key_create(
+        &mut self,
+        mk: &MachineKey,
+        algorithm: KeyAlgorithm,
+    ) -> Result<LoadableIdentityKey, TpmError> {
+        self.0.identity_key_create(mk, algorithm)
+    }
+
+    fn identity_key_load(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableIdentityKey,
+    ) -> Result<IdentityKey, TpmError> {
+        self.0.identity_key_load(mk, loadable_key)
+    }
+
+    fn identity_key_id(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        self.0.identity_key_id(key)
+    }
+
+    fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
+        self.0.identity_key_sign(key, input)
+    }
+
+    fn identity_key_verify(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, TpmError> {
+        self.0.identity_key_verify(key, input, signature)
+    }
+
+    fn identity_key_certificate_request(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableIdentityKey,
+        cn: &str,
+    ) -> Result<Vec<u8>, TpmError> {
+        self.0
+            .identity_key_certificate_request(mk, loadable_key, cn)
+    }
+
+    fn identity_key_associate_certificate(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableIdentityKey,
+        certificate_der: &[u8],
+    ) -> Result<LoadableIdentityKey, TpmError> {
+        self.0
+            .identity_key_associate_certificate(mk, loadable_key, certificate_der)
+    }
+
+    fn identity_key_public_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        self.0.identity_key_public_as_der(key)
+    }
+
+    fn identity_key_public_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        self.0.identity_key_public_as_pem(key)
+    }
+
+    fn identity_key_x509_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        self.0.identity_key_x509_as_pem(key)
+    }
+
+    fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        self.0.identity_key_x509_as_der(key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use openssl::asn1::Asn1Time;
