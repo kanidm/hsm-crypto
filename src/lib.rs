@@ -19,10 +19,12 @@
 use argon2::MIN_SALT_LEN;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::X509;
-use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
 use zeroize::Zeroizing;
+
+#[cfg(not(feature = "tpm"))]
+use serde::{Deserialize, Serialize};
 
 pub mod soft;
 
@@ -187,8 +189,12 @@ pub enum TpmError {
     TpmHmacKeyCreate,
     TpmHmacKeyLoad,
     TpmHmacSign,
-
     TpmHmacInputTooLarge,
+
+    TpmIdentityKeyObjectAttributesInvalid,
+    TpmIdentityKeyAlgorithmInvalid,
+    TpmIdentityKeyBuilderInvalid,
+    TpmIdentityKeyCreate,
 
     TpmOperationUnsupported,
 
@@ -258,7 +264,8 @@ pub enum HmacKey {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "tpm"), derive(Serialize, Deserialize))]
 pub enum LoadableIdentityKey {
     SoftEcdsa256V1 {
         key: Vec<u8>,
@@ -272,6 +279,22 @@ pub enum LoadableIdentityKey {
         iv: [u8; 16],
         x509: Option<Vec<u8>>,
     },
+    #[cfg(feature = "tpm")]
+    TpmEcdsa256V1 {
+        private: tpm::Private,
+        public: tpm::Public,
+        x509: Option<Vec<u8>>,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmEcdsa256V1 { private: (), public: (), x509: () },
+    #[cfg(feature = "tpm")]
+    TpmRsa2048V1 {
+        private: tpm::Private,
+        public: tpm::Public,
+        x509: Option<Vec<u8>>,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmRsa2048V1 { private: (), public: (), x509: () },
 }
 
 pub enum IdentityKey {
@@ -283,13 +306,31 @@ pub enum IdentityKey {
         pkey: PKey<Private>,
         x509: Option<X509>,
     },
+    #[cfg(feature = "tpm")]
+    TpmEcdsa256 {
+        key_context: tpm::TpmsContext,
+        x509: Option<X509>,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmEcdsa256 { key_handle: (), x509: () },
+    #[cfg(feature = "tpm")]
+    TpmRsa2048 {
+        key_context: tpm::TpmsContext,
+        x509: Option<X509>,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmRsa2048 { key_handle: (), x509: () },
 }
 
 impl IdentityKey {
     pub fn alg(&self) -> KeyAlgorithm {
         match self {
-            IdentityKey::SoftEcdsa256 { .. } => KeyAlgorithm::Ecdsa256,
-            IdentityKey::SoftRsa2048 { .. } => KeyAlgorithm::Rsa2048,
+            IdentityKey::SoftEcdsa256 { .. } | IdentityKey::TpmEcdsa256 { .. } => {
+                KeyAlgorithm::Ecdsa256
+            }
+            IdentityKey::SoftRsa2048 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                KeyAlgorithm::Rsa2048
+            }
         }
     }
 }
@@ -552,6 +593,54 @@ mod tests {
             // It should be the same.
             assert_eq!(output_1, output_2);
             assert_eq!(output_1, output_3);
+        };
+    }
+
+    #[macro_export]
+    macro_rules! test_tpm_identity_no_export {
+        ( $tpm:expr, $alg:expr ) => {
+            use crate::{AuthValue, Tpm};
+            use std::str::FromStr;
+            use tracing::trace;
+
+            let _ = tracing_subscriber::fmt::try_init();
+
+            let auth_str = AuthValue::generate().expect("Failed to create hex pin");
+
+            let auth_value = AuthValue::from_str(&auth_str).expect("Unable to create auth value");
+
+            // Request a new machine-key-context. This key "owns" anything
+            // created underneath it.
+            let loadable_machine_key = $tpm
+                .machine_key_create(&auth_value)
+                .expect("Unable to create new machine key");
+
+            trace!(?loadable_machine_key);
+
+            let machine_key = $tpm
+                .machine_key_load(&auth_value, &loadable_machine_key)
+                .expect("Unable to load machine key");
+
+            // from that ctx, create an identity key
+            let loadable_id_key = $tpm
+                .identity_key_create(&machine_key, $alg)
+                .expect("Unable to create id key");
+
+            trace!(?loadable_id_key);
+
+            let id_key = $tpm
+                .identity_key_load(&machine_key, &loadable_id_key)
+                .expect("Unable to load id key");
+
+            let input = "test string";
+            let signature = $tpm
+                .identity_key_sign(&id_key, input.as_bytes())
+                .expect("Unable to sign input");
+
+            // Internal verification
+            assert!($tpm
+                .identity_key_verify(&id_key, input.as_bytes(), signature.as_slice())
+                .expect("Unable to sign input"));
         };
     }
 
