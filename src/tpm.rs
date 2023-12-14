@@ -598,7 +598,10 @@ impl Tpm for TpmTss {
         _key: &IdentityKey,
         _input: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
+        // Waiting on https://github.com/parallaxsecond/rust-tss-esapi/pull/476
+
         Err(TpmError::TpmOperationUnsupported)
+
     }
 
     fn identity_key_verify(
@@ -671,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn soft_identity_rsa2048_hw_bound() {
+    fn tpm_identity_rsa2048_hw_bound() {
         // Create the Hsm.
         let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 

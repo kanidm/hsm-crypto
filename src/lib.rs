@@ -260,7 +260,7 @@ pub enum HmacKey {
     },
     #[cfg(not(feature = "tpm"))]
     TpmSha256 {
-        key_handle: (),
+        key_context: (),
     },
 }
 
@@ -312,14 +312,14 @@ pub enum IdentityKey {
         x509: Option<X509>,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmEcdsa256 { key_handle: (), x509: () },
+    TpmEcdsa256 { key_context: (), x509: () },
     #[cfg(feature = "tpm")]
     TpmRsa2048 {
         key_context: tpm::TpmsContext,
         x509: Option<X509>,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmRsa2048 { key_handle: (), x509: () },
+    TpmRsa2048 { key_context: (), x509: () },
 }
 
 impl IdentityKey {
