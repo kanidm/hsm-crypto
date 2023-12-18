@@ -1,10 +1,11 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError,
+    LoadableMachineKey, MachineKey, Padding, Tpm, TpmError,
 };
 use zeroize::Zeroizing;
 
 use openssl::ec::{EcGroup, EcKey};
+use openssl::encrypt::Decrypter;
 use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
@@ -393,6 +394,43 @@ impl Tpm for SoftTpm {
         })
     }
 
+    fn identity_key_decrypt(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        rsa_padding: Option<Padding>,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        let mut decrypter = match key {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
+            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
+                Decrypter::new(pkey).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::IdentityKeyInvalidForDecrypting
+                })?
+            }
+        };
+
+        if let Some(padding) = rsa_padding {
+            decrypter.set_rsa_padding(padding).map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::DecryptionBufferFail
+            })?;
+        }
+        let len = decrypter.decrypt_len(input).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::DecryptionBufferFail
+        })?;
+        let mut decrypted = vec![0; len];
+        let dlen = decrypter
+            .decrypt(input, &mut decrypted)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::DecryptionFail
+            })?;
+        decrypted.truncate(dlen);
+        Ok(decrypted.into())
+    }
+
     fn identity_key_verify(
         &mut self,
         key: &IdentityKey,
@@ -600,6 +638,8 @@ fn aes_256_gcm_decrypt(
 #[cfg(test)]
 mod tests {
     use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, KeyAlgorithm, SoftTpm};
+    use openssl::encrypt::Encrypter;
+    use openssl::rsa::Padding;
     use tracing::trace;
 
     #[test]

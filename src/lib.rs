@@ -18,6 +18,7 @@
 
 use argon2::MIN_SALT_LEN;
 use openssl::pkey::{PKey, Private};
+use openssl::rsa::Padding;
 use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -144,6 +145,7 @@ pub enum TpmError {
     IdentityKeyPublicToDer,
     IdentityKeyPublicToPem,
     IdentityKeyInvalidForSigning,
+    IdentityKeyInvalidForDecrypting,
     IdentityKeyInvalidForVerification,
     IdentityKeySignature,
     IdentityKeyVerification,
@@ -194,6 +196,9 @@ pub enum TpmError {
 
     Entropy,
     IncorrectKeyType,
+
+    DecryptionFail,
+    DecryptionBufferFail,
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +337,13 @@ pub trait Tpm {
 
     fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError>;
 
+    fn identity_key_decrypt(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        rsa_padding: Option<Padding>,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+
     fn identity_key_verify(
         &mut self,
         key: &IdentityKey,
@@ -424,6 +436,15 @@ impl Tpm for BoxedDynTpm {
 
     fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
         self.0.identity_key_sign(key, input)
+    }
+
+    fn identity_key_decrypt(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        rsa_padding: Option<Padding>,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        self.0.identity_key_decrypt(key, input, rsa_padding)
     }
 
     fn identity_key_verify(
@@ -627,6 +648,33 @@ mod tests {
                 .expect("Unable to validate signature");
 
             assert!(valid);
+
+            // Encrypt the test string
+            let mut encrypter = Encrypter::new(&public_key).expect("Key pair invalid");
+            let padding = match $alg {
+                KeyAlgorithm::Ecdsa256 => None,
+                KeyAlgorithm::Rsa2048 => Some(Padding::PKCS1),
+            };
+            if let Some(padding) = padding {
+                encrypter
+                    .set_rsa_padding(padding)
+                    .expect("Unable to set RSA padding");
+            }
+            let buffer_len = encrypter
+                .encrypt_len(input.as_bytes())
+                .expect("Unknown out buffer len");
+            let mut encrypted = vec![0; buffer_len];
+            let encrypted_len = encrypter
+                .encrypt(input.as_bytes(), &mut encrypted)
+                .expect("Unable to encrypt");
+            encrypted.truncate(encrypted_len);
+
+            // Decrypt the test string
+            let decrypted = $tpm
+                .identity_key_decrypt(&id_key, &encrypted, padding)
+                .expect("Unable to decrypt");
+
+            assert_eq!(&*decrypted, input.as_bytes());
         };
     }
 
