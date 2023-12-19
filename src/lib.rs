@@ -195,6 +195,21 @@ pub enum TpmError {
     TpmIdentityKeyAlgorithmInvalid,
     TpmIdentityKeyBuilderInvalid,
     TpmIdentityKeyCreate,
+    TpmIdentityKeySign,
+    TpmIdentityKeySignatureInvalid,
+    TpmIdentityKeyEcdsaSigRInvalid,
+    TpmIdentityKeyEcdsaSigSInvalid,
+    TpmIdentityKeyEcdsaSigFromParams,
+    TpmIdentityKeyEcdsaSigToDer,
+
+    TpmIdentityKeyParamInvalid,
+    TpmIdentityKeyParamsToRsaSig,
+
+    TpmIdentityKeyDerToEcdsaSig,
+    TpmIdentityKeyParamRInvalid,
+    TpmIdentityKeyParamSInvalid,
+    TpmIdentityKeyParamsToEcdsaSig,
+    TpmIdentityKeyVerify,
 
     TpmOperationUnsupported,
 
@@ -637,10 +652,14 @@ mod tests {
                 .identity_key_sign(&id_key, input.as_bytes())
                 .expect("Unable to sign input");
 
+            trace!(?signature);
+
+            let verify = $tpm.identity_key_verify(&id_key, input.as_bytes(), signature.as_slice());
+
+            trace!(?verify);
+
             // Internal verification
-            assert!($tpm
-                .identity_key_verify(&id_key, input.as_bytes(), signature.as_slice())
-                .expect("Unable to sign input"));
+            assert!(verify.expect("Unable to sign input"));
         };
     }
 

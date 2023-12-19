@@ -402,10 +402,18 @@ impl Tpm for SoftTpm {
             }
         };
 
-        signer.sign_oneshot_to_vec(input).map_err(|ossl_err| {
-            error!(?ossl_err);
-            TpmError::IdentityKeySignature
-        })
+        signer
+            .sign_oneshot_to_vec(input)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::IdentityKeySignature
+            })
+            .map(|sig| {
+                let res = openssl::ecdsa::EcdsaSig::from_der(&sig);
+                tracing::debug!(res = %res.is_ok());
+
+                sig
+            })
     }
 
     fn identity_key_verify(
