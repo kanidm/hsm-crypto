@@ -327,6 +327,9 @@ impl Tpm for SoftTpm {
                     TpmError::IdentityKeyPublicToDer
                 })
             }
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 
@@ -338,6 +341,9 @@ impl Tpm for SoftTpm {
                     error!(?ossl_err);
                     TpmError::IdentityKeyPublicToPem
                 })
+            }
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                Err(TpmError::IncorrectKeyType)
             }
         }
     }
@@ -355,6 +361,9 @@ impl Tpm for SoftTpm {
                 error!(?ossl_err);
                 TpmError::IdentityKeyX509ToPem
             }),
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                Err(TpmError::IncorrectKeyType)
+            }
             _ => Err(TpmError::IdentityKeyX509Missing),
         }
     }
@@ -372,6 +381,9 @@ impl Tpm for SoftTpm {
                 error!(?ossl_err);
                 TpmError::IdentityKeyX509ToDer
             }),
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                Err(TpmError::IncorrectKeyType)
+            }
             _ => Err(TpmError::IdentityKeyX509Missing),
         }
     }
@@ -385,12 +397,23 @@ impl Tpm for SoftTpm {
                     TpmError::IdentityKeyInvalidForSigning
                 })?
             }
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                return Err(TpmError::IncorrectKeyType)
+            }
         };
 
-        signer.sign_oneshot_to_vec(input).map_err(|ossl_err| {
-            error!(?ossl_err);
-            TpmError::IdentityKeySignature
-        })
+        signer
+            .sign_oneshot_to_vec(input)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::IdentityKeySignature
+            })
+            .map(|sig| {
+                let res = openssl::ecdsa::EcdsaSig::from_der(&sig);
+                tracing::debug!(res = %res.is_ok());
+
+                sig
+            })
     }
 
     fn identity_key_verify(
@@ -406,6 +429,9 @@ impl Tpm for SoftTpm {
                     error!(?ossl_err);
                     TpmError::IdentityKeyInvalidForVerification
                 })?
+            }
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                return Err(TpmError::IncorrectKeyType)
             }
         };
 
@@ -465,6 +491,9 @@ impl Tpm for SoftTpm {
                         TpmError::X509RequestSign
                     })?;
             }
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                return Err(TpmError::IncorrectKeyType)
+            }
         }
 
         req_builder.build().to_der().map_err(|ossl_err| {
@@ -499,6 +528,9 @@ impl Tpm for SoftTpm {
                     return Err(TpmError::X509KeyMismatch);
                 }
             }
+            IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
+                return Err(TpmError::IncorrectKeyType)
+            }
         };
 
         // At this point we know the cert belongs to this key, so lets
@@ -513,6 +545,8 @@ impl Tpm for SoftTpm {
             LoadableIdentityKey::SoftRsa2048V1 { ref mut x509, .. } => {
                 *x509 = Some(certificate_der.to_vec());
             }
+            LoadableIdentityKey::TpmEcdsa256V1 { .. }
+            | LoadableIdentityKey::TpmRsa2048V1 { .. } => return Err(TpmError::IncorrectKeyType),
         };
 
         Ok(cloned_key)

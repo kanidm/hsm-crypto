@@ -2,23 +2,36 @@ use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
     LoadableMachineKey, MachineKey, Tpm, TpmError,
 };
+
+use openssl::bn::BigNum;
+use openssl::ecdsa::EcdsaSig;
+use openssl::hash::{hash, MessageDigest};
+use openssl::x509::X509;
+
 // use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
 use tss_esapi::structures::{
-    Auth, CreateKeyResult, CreatePrimaryKeyResult, Digest, KeyedHashScheme, MaxBuffer,
-    PublicBuilder, PublicKeyedHashParameters, SymmetricCipherParameters, SymmetricDefinition,
-    SymmetricDefinitionObject,
+    Auth, CreateKeyResult, CreatePrimaryKeyResult, Digest, EccParameter, EccPoint, EccScheme,
+    EccSignature, HashScheme, HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder,
+    PublicEccParametersBuilder, PublicKeyRsa, PublicKeyedHashParameters,
+    PublicRsaParametersBuilder, RsaExponent, RsaScheme, RsaSignature, Signature, SignatureScheme,
+    SymmetricCipherParameters, SymmetricDefinition, SymmetricDefinitionObject,
 };
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
 
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 
+use tss_esapi::constants::tss::TPM2_RH_NULL;
+use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
+use tss_esapi::interface_types::ecc::EccCurve;
+use tss_esapi::interface_types::key_bits::RsaKeyBits;
 use tss_esapi::interface_types::session_handles::AuthSession;
+use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
 
 use tss_esapi::handles::ObjectHandle;
 
@@ -117,13 +130,11 @@ impl TpmTss {
                 TpmError::TpmPrimaryPublicBuilderInvalid
             })?;
 
+        // Create the key under the "owner" hierarchy. Other hierarchies are platform
+        // which is for boot services, null which is ephemeral and resets after a reboot,
+        // and endorsement which allows key certification by the TPM manufacturer.
         self.tpm_ctx
-            .execute_with_nullauth_session(|ctx| {
-                // Create the key under the "owner" hierarchy. Other hierarchies are platform
-                // which is for boot services, null which is ephemeral and resets after a reboot,
-                // and endorsement which allows key certification by the TPM manufacturer.
-                ctx.create_primary(Hierarchy::Owner, primary_pub, None, None, None, None)
-            })
+            .create_primary(Hierarchy::Owner, primary_pub, None, None, None, None)
             .map_err(|tpm_err| {
                 error!(?tpm_err);
                 TpmError::TpmPrimaryCreate
@@ -232,16 +243,14 @@ impl Tpm for TpmTss {
 
                 hsm_ctx
                     .tpm_ctx
-                    .execute_with_nullauth_session(|ctx| {
-                        ctx.create(
-                            primary_key_handle.into(),
-                            key_pub,
-                            Some(tpm_auth_value),
-                            None,
-                            None,
-                            None,
-                        )
-                    })
+                    .create(
+                        primary_key_handle.into(),
+                        key_pub,
+                        Some(tpm_auth_value),
+                        None,
+                        None,
+                        None,
+                    )
                     .map(
                         |CreateKeyResult {
                              out_private: private,
@@ -291,12 +300,12 @@ impl Tpm for TpmTss {
 
                 hsm_ctx
                     .tpm_ctx
-                    .execute_with_nullauth_session(|ctx| {
-                        ctx.load(primary_key_handle.into(), private.clone(), public.clone())
-                            .and_then(|key_handle| {
-                                ctx.tr_set_auth(key_handle.into(), tpm_auth_value)
-                                    .map(|()| key_handle)
-                            })
+                    .load(primary_key_handle.into(), private.clone(), public.clone())
+                    .and_then(|key_handle| {
+                        hsm_ctx
+                            .tpm_ctx
+                            .tr_set_auth(key_handle.into(), tpm_auth_value)
+                            .map(|()| key_handle)
                     })
                     .map(|key_handle| MachineKey::Tpm { key_handle })
                     .map_err(|tpm_err| {
@@ -350,9 +359,7 @@ impl Tpm for TpmTss {
             })?;
 
         self.tpm_ctx
-            .execute_with_nullauth_session(|ctx| {
-                ctx.create(mk_key_handle, key_pub, None, None, None, None)
-            })
+            .create(mk_key_handle, key_pub, None, None, None, None)
             .map(
                 |CreateKeyResult {
                      out_private: private,
@@ -385,7 +392,7 @@ impl Tpm for TpmTss {
 
         let key_handle = self
             .tpm_ctx
-            .execute_with_nullauth_session(|ctx| ctx.load(mk_key_handle, private, public))
+            .load(mk_key_handle, private, public)
             .map_err(|tpm_err| {
                 error!(?tpm_err);
                 TpmError::TpmHmacKeyLoad
@@ -430,39 +437,363 @@ impl Tpm for TpmTss {
 
     fn identity_key_create(
         &mut self,
-        _mk: &MachineKey,
-        _algorithm: KeyAlgorithm,
+        mk: &MachineKey,
+        algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
-        Err(TpmError::TpmOperationUnsupported)
+        let mk_key_handle = match mk {
+            MachineKey::Tpm { key_handle } => key_handle.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmIdentityKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = match algorithm {
+            KeyAlgorithm::Ecdsa256 => {
+                let ecc_params = PublicEccParametersBuilder::new_unrestricted_signing_key(
+                    EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)),
+                    EccCurve::NistP256,
+                )
+                .build()
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyAlgorithmInvalid
+                })?;
+
+                PublicBuilder::new()
+                    .with_public_algorithm(PublicAlgorithm::Ecc)
+                    .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+                    .with_object_attributes(object_attributes)
+                    .with_ecc_parameters(ecc_params)
+                    .with_ecc_unique_identifier(EccPoint::default())
+                    .build()
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmIdentityKeyBuilderInvalid
+                    })?
+            }
+            KeyAlgorithm::Rsa2048 => {
+                let rsa_params = PublicRsaParametersBuilder::new_unrestricted_signing_key(
+                    RsaScheme::RsaPss(HashScheme::new(HashingAlgorithm::Sha256)),
+                    RsaKeyBits::Rsa2048,
+                    RsaExponent::default(),
+                )
+                .build()
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyAlgorithmInvalid
+                })?;
+
+                PublicBuilder::new()
+                    .with_public_algorithm(PublicAlgorithm::Rsa)
+                    .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+                    .with_object_attributes(object_attributes)
+                    .with_rsa_parameters(rsa_params)
+                    .with_rsa_unique_identifier(PublicKeyRsa::default())
+                    .build()
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmIdentityKeyBuilderInvalid
+                    })?
+            }
+        };
+
+        self.tpm_ctx
+            .create(mk_key_handle.into(), key_pub, None, None, None, None)
+            .map(
+                |CreateKeyResult {
+                     out_private: private,
+                     out_public: public,
+                     creation_data: _,
+                     creation_hash: _,
+                     creation_ticket: _,
+                 }| {
+                    match algorithm {
+                        KeyAlgorithm::Ecdsa256 => LoadableIdentityKey::TpmEcdsa256V1 {
+                            private,
+                            public,
+                            x509: None,
+                        },
+                        KeyAlgorithm::Rsa2048 => LoadableIdentityKey::TpmRsa2048V1 {
+                            private,
+                            public,
+                            x509: None,
+                        },
+                    }
+                },
+            )
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmIdentityKeyCreate
+            })
     }
 
     fn identity_key_load(
         &mut self,
-        _mk: &MachineKey,
-        _loadable_key: &LoadableIdentityKey,
+        mk: &MachineKey,
+        loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
-        Err(TpmError::TpmOperationUnsupported)
+        let (private, public, algorithm, x509) = match loadable_key {
+            LoadableIdentityKey::TpmEcdsa256V1 {
+                private,
+                public,
+                x509,
+            } => (
+                private.clone(),
+                public.clone(),
+                KeyAlgorithm::Ecdsa256,
+                x509.as_ref(),
+            ),
+            LoadableIdentityKey::TpmRsa2048V1 {
+                private,
+                public,
+                x509,
+            } => (
+                private.clone(),
+                public.clone(),
+                KeyAlgorithm::Rsa2048,
+                x509.as_ref(),
+            ),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let x509 = match x509 {
+            Some(der) => {
+                let x509 = X509::from_der(der).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::X509FromDer
+                })?;
+
+                /*
+                let x509_pkey = x509.public_key().map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::X509PublicKey
+                })?;
+
+                if !pkey.public_eq(&x509_pkey) {
+                    return Err(TpmError::X509KeyMismatch);
+                }
+                */
+
+                Some(x509)
+            }
+            None => None,
+        };
+
+        let mk_key_handle = match mk {
+            MachineKey::Tpm { key_handle } => key_handle.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let key_handle = self
+            .tpm_ctx
+            .load(mk_key_handle, private, public)
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmHmacKeyLoad
+            })?;
+
+        // Now it's loaded, lets setup the context we will load/unload as needed. In this
+        // process we WILL be unloading the keyhandle.
+        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, hmac_key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .context_save(hmac_key_handle.into())
+                .map(|key_context| match algorithm {
+                    KeyAlgorithm::Ecdsa256 => IdentityKey::TpmEcdsa256 { key_context, x509 },
+                    KeyAlgorithm::Rsa2048 => IdentityKey::TpmRsa2048 { key_context, x509 },
+                })
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmContextSave
+                })
+        })
     }
 
     fn identity_key_id(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
         Err(TpmError::TpmOperationUnsupported)
     }
 
-    fn identity_key_sign(
-        &mut self,
-        _key: &IdentityKey,
-        _input: &[u8],
-    ) -> Result<Vec<u8>, TpmError> {
-        Err(TpmError::TpmOperationUnsupported)
+    fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
+        let (key_context, sig_scheme, digest_alg) = match key {
+            IdentityKey::TpmEcdsa256 {
+                key_context,
+                x509: _,
+            } => (
+                key_context.clone(),
+                SignatureScheme::Null,
+                MessageDigest::sha256(),
+            ),
+            IdentityKey::TpmRsa2048 {
+                key_context,
+                x509: _,
+            } => (
+                key_context.clone(),
+                SignatureScheme::Null,
+                MessageDigest::sha256(),
+            ),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        // Future, may need to change this size for non sha256
+        // Hash the input.
+        let bytes = hash(digest_alg, &input).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::IdentityKeyDigest
+        })?;
+
+        let tpm_digest: Digest = Digest::try_from(&bytes as &[u8]).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::IdentityKeyDigest
+        })?;
+
+        // No need for hashcheck, unrestricted key.
+        let validation: HashcheckTicket = TPMT_TK_HASHCHECK {
+            tag: TPM2_ST_HASHCHECK,
+            hierarchy: TPM2_RH_NULL,
+            digest: Default::default(),
+        }
+        .try_into()
+        .unwrap();
+
+        // Now we can sign.
+        let signature =
+            self.execute_with_temporary_object_context(key_context, |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .sign(key_handle.into(), tpm_digest, sig_scheme, validation)
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmIdentityKeySign
+                    })
+            })?;
+
+        tracing::debug!(?signature);
+
+        match signature {
+            Signature::RsaPss(rsasig) => Ok(rsasig.signature().to_vec()),
+            Signature::EcDsa(ecsig) => {
+                let s = BigNum::from_slice(ecsig.signature_s().as_slice()).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::TpmIdentityKeyEcdsaSigSInvalid
+                })?;
+
+                let r = BigNum::from_slice(ecsig.signature_r().as_slice()).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::TpmIdentityKeyEcdsaSigRInvalid
+                })?;
+
+                let sig = EcdsaSig::from_private_components(r, s).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::TpmIdentityKeyEcdsaSigFromParams
+                })?;
+
+                sig.to_der().map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::TpmIdentityKeyEcdsaSigToDer
+                })
+            }
+            _ => {
+                error!("tpm returned an invalid signature type");
+                Err(TpmError::TpmIdentityKeySignatureInvalid)
+            }
+        }
     }
 
     fn identity_key_verify(
         &mut self,
-        _key: &IdentityKey,
-        _input: &[u8],
-        _signature: &[u8],
+        key: &IdentityKey,
+        input: &[u8],
+        signature: &[u8],
     ) -> Result<bool, TpmError> {
-        Err(TpmError::TpmOperationUnsupported)
+        let (key_context, tpm_signature, digest_alg) = match key {
+            IdentityKey::TpmEcdsa256 {
+                key_context,
+                x509: _,
+            } => {
+                let sig = EcdsaSig::from_der(signature).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::TpmIdentityKeyDerToEcdsaSig
+                })?;
+
+                let r = EccParameter::try_from(sig.r().to_vec()).map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyParamRInvalid
+                })?;
+
+                let s = EccParameter::try_from(sig.s().to_vec()).map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyParamSInvalid
+                })?;
+
+                let ecsig =
+                    EccSignature::create(HashingAlgorithm::Sha256, r, s).map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmIdentityKeyParamsToEcdsaSig
+                    })?;
+
+                let tpm_signature = Signature::EcDsa(ecsig);
+
+                tracing::debug!(?tpm_signature);
+
+                (key_context.clone(), tpm_signature, MessageDigest::sha256())
+            }
+            IdentityKey::TpmRsa2048 {
+                key_context,
+                x509: _,
+            } => {
+                let pk_rsa = PublicKeyRsa::try_from(signature).map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyParamInvalid
+                })?;
+
+                let rsa_sig =
+                    RsaSignature::create(HashingAlgorithm::Sha256, pk_rsa).map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmIdentityKeyParamsToRsaSig
+                    })?;
+
+                let tpm_signature = Signature::RsaPss(rsa_sig);
+
+                (key_context.clone(), tpm_signature, MessageDigest::sha256())
+            }
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let bytes = hash(digest_alg, &input).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::IdentityKeyDigest
+        })?;
+
+        let tpm_digest: Digest = Digest::try_from(&bytes as &[u8]).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::IdentityKeyDigest
+        })?;
+
+        let verified =
+            self.execute_with_temporary_object_context(key_context, |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .verify_signature(key_handle.into(), tpm_digest, tpm_signature)
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmIdentityKeyVerify
+                    })
+            });
+
+        tracing::trace!(?verified);
+
+        Ok(verified.is_ok())
     }
 
     fn identity_key_certificate_request(
@@ -503,6 +834,7 @@ impl Tpm for TpmTss {
 #[cfg(test)]
 mod tests {
     use super::TpmTss;
+    use crate::KeyAlgorithm;
 
     #[test]
     fn tpm_hmac_hw_bound() {
@@ -515,5 +847,20 @@ mod tests {
         let mut hsm_b = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
         crate::test_tpm_hmac!(hsm_a, hsm_b);
+    }
+
+    #[test]
+    fn tpm_identity_ecdsa256_hw_bound() {
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        crate::test_tpm_identity_no_export!(hsm, KeyAlgorithm::Ecdsa256);
+    }
+
+    #[test]
+    fn tpm_identity_rsa2048_hw_bound() {
+        // Create the Hsm.
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        crate::test_tpm_identity_no_export!(hsm, KeyAlgorithm::Rsa2048);
     }
 }
