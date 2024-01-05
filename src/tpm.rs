@@ -710,6 +710,15 @@ impl Tpm for TpmTss {
         }
     }
 
+    fn identity_key_decrypt(
+        &mut self,
+        key: &IdentityKey,
+        input: &[u8],
+        rsa_padding: Option<Padding>,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
+    }
+
     fn identity_key_verify(
         &mut self,
         key: &IdentityKey,
