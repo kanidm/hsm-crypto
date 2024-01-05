@@ -654,6 +654,23 @@ mod tests {
     }
 
     #[test]
+    fn aes_256_gcm_enc_dec_large() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let input = [0xf; 256];
+        let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
+        let iv = b"\x00\x01\x02\x03\x04\x05\x06\x07\x00\x01\x02\x03\x04\x05\x06\x07";
+        #[allow(clippy::expect_used)]
+        let (enc, tag) = aes_256_gcm_encrypt(&input, key, iv).expect("Unable to encrypt");
+
+        trace!(?enc, ?tag, key_len = key.len());
+        #[allow(clippy::expect_used)]
+        let output = aes_256_gcm_decrypt(&enc, &tag, key, iv).expect("Unable to decrypt");
+
+        assert_eq!(&input, output.as_slice());
+    }
+
+    #[test]
     fn soft_hmac_hw_bound() {
         let _ = tracing_subscriber::fmt::try_init();
 
