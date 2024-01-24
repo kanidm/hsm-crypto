@@ -19,12 +19,10 @@
 use argon2::MIN_SALT_LEN;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::X509;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
 use zeroize::Zeroizing;
-
-#[cfg(not(feature = "tpm"))]
-use serde::{Deserialize, Serialize};
 
 pub mod soft;
 
@@ -217,8 +215,7 @@ pub enum TpmError {
     IncorrectKeyType,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "tpm"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableMachineKey {
     SoftAes256GcmV1 {
         key: Vec<u8>,
@@ -248,8 +245,7 @@ pub enum MachineKey {
     },
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "tpm"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableHmacKey {
     SoftSha256V1 {
         key: Vec<u8>,
@@ -279,8 +275,7 @@ pub enum HmacKey {
     },
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "tpm"), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableIdentityKey {
     SoftEcdsa256V1 {
         key: Vec<u8>,

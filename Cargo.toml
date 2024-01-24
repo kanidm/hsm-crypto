@@ -20,7 +20,8 @@ hex = "0.4.3"
 openssl = "^0.10.57"
 serde = { version = "^1.0", features = ["derive"] }
 tracing = "^0.1.37"
-tss-esapi = { version = "^7.4.0", optional = true }
+# tss-esapi = { version = "^7.4.0", optional = true }
+tss-esapi = { git = "https://github.com/parallaxsecond/rust-tss-esapi.git", rev = "8cc11fc76838f70557248c968faaaad3050fcbc3", optional = true }
 zeroize = "1.6.0"
 
 [dev-dependencies]
