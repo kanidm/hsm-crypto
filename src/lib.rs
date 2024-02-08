@@ -18,11 +18,15 @@
 
 use argon2::MIN_SALT_LEN;
 use openssl::pkey::{PKey, Private};
+use openssl::rsa::Rsa;
 use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
 use zeroize::Zeroizing;
+
+pub(crate) const AES256GCM_KEY_LEN: usize = 32;
+pub(crate) const HMAC_KEY_LEN: usize = 32;
 
 pub mod soft;
 
@@ -32,7 +36,9 @@ pub mod tpm;
 // mod yubihsm;
 
 pub enum AuthValue {
-    Key256Bit { auth_key: Zeroizing<[u8; 32]> },
+    Key256Bit {
+        auth_key: Zeroizing<[u8; AES256GCM_KEY_LEN]>,
+    },
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -57,7 +63,7 @@ impl AuthValue {
     }
 
     pub fn ephemeral() -> Result<Self, TpmError> {
-        let mut auth_key = Zeroizing::new([0; 32]);
+        let mut auth_key = Zeroizing::new([0; AES256GCM_KEY_LEN]);
         openssl::rand::rand_bytes(auth_key.as_mut()).map_err(|ossl_err| {
             error!(?ossl_err);
             TpmError::Entropy
@@ -72,7 +78,7 @@ impl AuthValue {
     pub fn derive_from_bytes(cleartext: &[u8]) -> Result<Self, TpmError> {
         use argon2::{Algorithm, Argon2, Params, Version};
 
-        let mut auth_key = Zeroizing::new([0; 32]);
+        let mut auth_key = Zeroizing::new([0; AES256GCM_KEY_LEN]);
 
         // This can't be changed else it will break key derivation for users.
         let argon2id_params =
@@ -164,6 +170,11 @@ pub enum TpmError {
     X509RequestSign,
     X509RequestToDer,
     X509RequestSetPublic,
+
+    MsOapxbcKeyPublicToDer,
+    MsOapxbcKeyOaepOption,
+    MsOapxbcKeyOaepDecipher,
+    MsOapxbcKeyOaepEncipher,
 
     TpmTctiNameInvalid,
     TpmAuthSession,
@@ -316,6 +327,8 @@ pub enum IdentityKey {
         pkey: PKey<Private>,
         x509: Option<X509>,
     },
+
+    // These well be "Soft" in tpm as well,
     #[cfg(feature = "tpm")]
     TpmEcdsa256 {
         key_context: tpm::TpmsContext,
@@ -343,6 +356,52 @@ impl IdentityKey {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    all(feature = "msextensions", not(feature = "tpm")),
+    derive(Serialize, Deserialize)
+)]
+pub enum LoadableMsOapxbcRsaKey {
+    Soft2048V1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+        cek: Vec<u8>,
+    },
+    #[cfg(feature = "tpm")]
+    TpmRsa2048V1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmRsa2048V1 { private: (), public: () },
+}
+
+#[cfg(feature = "msextensions")]
+pub enum MsOapxbcRsaKey {
+    Soft {
+        key: Rsa<Private>,
+        cek: Zeroizing<Vec<u8>>,
+    },
+    #[cfg(feature = "tpm")]
+    Tpm { key_context: tpm::TpmsContext },
+    #[cfg(not(feature = "tpm"))]
+    Tpm { key_context: () },
+}
+
+#[cfg(feature = "msextensions")]
+pub enum LoadableMsOapxbcSessionKey {
+    SoftV1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+    },
+    #[cfg(feature = "tpm")]
+    TpmV1 { key: Vec<u8>, iv: [u8; 16] },
+    #[cfg(not(feature = "tpm"))]
+    TpmV1 { key: (), iv: () },
 }
 
 pub trait Tpm {
@@ -411,6 +470,44 @@ pub trait Tpm {
     fn identity_key_x509_as_pem(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError>;
 
     fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_create(
+        &mut self,
+        mk: &MachineKey,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_import(
+        &mut self,
+        mk: &MachineKey,
+        private_key: Rsa<Private>,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_load(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableMsOapxbcRsaKey,
+    ) -> Result<MsOapxbcRsaKey, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_public_as_der(&mut self, key: &MsOapxbcRsaKey) -> Result<Vec<u8>, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        input: &[u8],
+        expected_key_len: usize,
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_yield_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
 }
 
 pub struct BoxedDynTpm(Box<dyn Tpm + 'static + Send>);
@@ -520,6 +617,57 @@ impl Tpm for BoxedDynTpm {
 
     fn identity_key_x509_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
         self.0.identity_key_x509_as_der(key)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_create(
+        &mut self,
+        mk: &MachineKey,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
+        self.0.msoapxbc_rsa_key_create(mk)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_import(
+        &mut self,
+        mk: &MachineKey,
+        private_key: Rsa<Private>,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
+        self.0.msoapxbc_rsa_key_import(mk, private_key)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_load(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableMsOapxbcRsaKey,
+    ) -> Result<MsOapxbcRsaKey, TpmError> {
+        self.0.msoapxbc_rsa_key_load(mk, loadable_key)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_public_as_der(&mut self, key: &MsOapxbcRsaKey) -> Result<Vec<u8>, TpmError> {
+        self.0.msoapxbc_rsa_public_as_der(key)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        input: &[u8],
+        expected_key_len: usize,
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
+        self.0
+            .msoapxbc_rsa_decipher_session_key(key, input, expected_key_len)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_yield_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        self.0.msoapxbc_rsa_yield_session_key(key, session_key)
     }
 }
 

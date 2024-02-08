@@ -11,6 +11,7 @@ authors = ["William Brown <william@blackhats.net.au>"]
 [features]
 # default = ["tpm"]
 tpm = ["dep:tss-esapi", "dep:tss-esapi-sys"]
+msextensions = []
 
 # tss-esapi = { path = "../rust-tss-esapi/tss-esapi" }
 
