@@ -16,7 +16,7 @@ use tracing::error;
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
 use tss_esapi::structures::{
-    Auth, CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccParameter, EccPoint, EccScheme,
+    CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccParameter, EccPoint, EccScheme,
     EccSignature, HashScheme, HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder,
     PublicEccParametersBuilder, PublicKeyRsa, PublicKeyedHashParameters,
     PublicRsaParametersBuilder, RsaDecryptionScheme, RsaExponent, RsaScheme, RsaSignature,
@@ -39,7 +39,7 @@ use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
 use tss_esapi::handles::ObjectHandle;
 
 pub use tss_esapi::handles::KeyHandle;
-pub use tss_esapi::structures::{Private, Public};
+pub use tss_esapi::structures::{Auth, Private, Public};
 pub use tss_esapi::utils::TpmsContext;
 
 #[cfg(feature = "msextensions")]
@@ -159,8 +159,7 @@ impl TpmTss {
     {
         let res = f(self, object);
 
-        self.tpm_ctx.flush_context(object)
-        .map_err(|tpm_err| {
+        self.tpm_ctx.flush_context(object).map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::TpmContextFlushObject
         })?;
@@ -299,7 +298,7 @@ impl Tpm for TpmTss {
         self.execute_with_temporary_object(
             primary.key_handle.into(),
             |hsm_ctx, primary_key_handle| {
-                let tpm_auth_value = match auth_value {
+                let auth_value = match auth_value {
                     AuthValue::Key256Bit { auth_key } => Auth::from_bytes(auth_key.as_ref()),
                 }
                 .map_err(|tpm_err| {
@@ -313,10 +312,14 @@ impl Tpm for TpmTss {
                     .and_then(|key_handle| {
                         hsm_ctx
                             .tpm_ctx
-                            .tr_set_auth(key_handle.into(), tpm_auth_value)
-                            .map(|()| key_handle)
+                            .tr_set_auth(key_handle.into(), auth_value.clone())
+                            .map(|_| key_handle)
                     })
-                    .map(|key_handle| MachineKey::Tpm { key_handle })
+                    .and_then(|key_handle| hsm_ctx.tpm_ctx.context_save(key_handle.into()))
+                    .map(|key_context| MachineKey::Tpm {
+                        key_context,
+                        auth_value,
+                    })
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
                         TpmError::TpmMachineKeyLoad
@@ -326,8 +329,11 @@ impl Tpm for TpmTss {
     }
 
     fn hmac_key_create(&mut self, mk: &MachineKey) -> Result<LoadableHmacKey, TpmError> {
-        let mk_key_handle = match mk {
-            MachineKey::Tpm { key_handle } => key_handle.clone(),
+        let (mk_key_context, auth_value) = match mk {
+            MachineKey::Tpm {
+                key_context,
+                auth_value,
+            } => (key_context.clone(), auth_value.clone()),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
@@ -367,21 +373,32 @@ impl Tpm for TpmTss {
                 TpmError::TpmHmacKeyBuilderInvalid
             })?;
 
-        self.tpm_ctx
-            .create(mk_key_handle, key_pub, None, None, None, None)
-            .map(
-                |CreateKeyResult {
-                     out_private: private,
-                     out_public: public,
-                     creation_data: _,
-                     creation_hash: _,
-                     creation_ticket: _,
-                 }| { LoadableHmacKey::TpmSha256V1 { private, public } },
-            )
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmHmacKeyCreate
-            })
+        self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .tr_set_auth(mk_key_handle.into(), auth_value)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmAuthValueInvalid
+                })?;
+
+            hsm_ctx
+                .tpm_ctx
+                .create(mk_key_handle.into(), key_pub, None, None, None, None)
+                .map(
+                    |CreateKeyResult {
+                         out_private: private,
+                         out_public: public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| { LoadableHmacKey::TpmSha256V1 { private, public } },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmHmacKeyCreate
+                })
+        })
     }
 
     fn hmac_key_load(
@@ -394,30 +411,43 @@ impl Tpm for TpmTss {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let mk_key_handle = match mk {
-            MachineKey::Tpm { key_handle } => key_handle.clone(),
+        let (mk_key_context, auth_value) = match mk {
+            MachineKey::Tpm {
+                key_context,
+                auth_value,
+            } => (key_context.clone(), auth_value.clone()),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let key_handle = self
-            .tpm_ctx
-            .load(mk_key_handle, private, public)
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmHmacKeyLoad
-            })?;
-
-        // Now it's loaded, lets setup the context we will load/unload as needed. In this
-        // process we WILL be unloading the keyhandle.
-        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, hmac_key_handle| {
+        self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
             hsm_ctx
                 .tpm_ctx
-                .context_save(hmac_key_handle.into())
-                .map(|key_context| HmacKey::TpmSha256 { key_context })
+                .tr_set_auth(mk_key_handle.into(), auth_value)
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
-                    TpmError::TpmContextSave
-                })
+                    TpmError::TpmAuthValueInvalid
+                })?;
+
+            let key_handle = hsm_ctx
+                .tpm_ctx
+                .load(mk_key_handle.into(), private, public)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmHmacKeyLoad
+                })?;
+
+            // Now it's loaded, lets setup the context we will load/unload as needed. In this
+            // process we WILL be unloading the keyhandle.
+            hsm_ctx.execute_with_temporary_object(key_handle.into(), |hsm_ctx, hmac_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .context_save(hmac_key_handle.into())
+                    .map(|key_context| HmacKey::TpmSha256 { key_context })
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmContextSave
+                    })
+            })
         })
     }
 
@@ -449,8 +479,11 @@ impl Tpm for TpmTss {
         mk: &MachineKey,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
-        let mk_key_handle = match mk {
-            MachineKey::Tpm { key_handle } => key_handle.clone(),
+        let (mk_key_context, auth_value) = match mk {
+            MachineKey::Tpm {
+                key_context,
+                auth_value,
+            } => (key_context.clone(), auth_value.clone()),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
@@ -517,34 +550,45 @@ impl Tpm for TpmTss {
             }
         };
 
-        self.tpm_ctx
-            .create(mk_key_handle.into(), key_pub, None, None, None, None)
-            .map(
-                |CreateKeyResult {
-                     out_private: private,
-                     out_public: public,
-                     creation_data: _,
-                     creation_hash: _,
-                     creation_ticket: _,
-                 }| {
-                    match algorithm {
-                        KeyAlgorithm::Ecdsa256 => LoadableIdentityKey::TpmEcdsa256V1 {
-                            private,
-                            public,
-                            x509: None,
-                        },
-                        KeyAlgorithm::Rsa2048 => LoadableIdentityKey::TpmRsa2048V1 {
-                            private,
-                            public,
-                            x509: None,
-                        },
-                    }
-                },
-            )
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmIdentityKeyCreate
-            })
+        self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .tr_set_auth(mk_key_handle.into(), auth_value)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmAuthValueInvalid
+                })?;
+
+            hsm_ctx
+                .tpm_ctx
+                .create(mk_key_handle.into(), key_pub, None, None, None, None)
+                .map(
+                    |CreateKeyResult {
+                         out_private: private,
+                         out_public: public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| {
+                        match algorithm {
+                            KeyAlgorithm::Ecdsa256 => LoadableIdentityKey::TpmEcdsa256V1 {
+                                private,
+                                public,
+                                x509: None,
+                            },
+                            KeyAlgorithm::Rsa2048 => LoadableIdentityKey::TpmRsa2048V1 {
+                                private,
+                                public,
+                                x509: None,
+                            },
+                        }
+                    },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyCreate
+                })
+        })
     }
 
     fn identity_key_load(
@@ -599,33 +643,46 @@ impl Tpm for TpmTss {
             None => None,
         };
 
-        let mk_key_handle = match mk {
-            MachineKey::Tpm { key_handle } => key_handle.clone(),
+        let (mk_key_context, auth_value) = match mk {
+            MachineKey::Tpm {
+                key_context,
+                auth_value,
+            } => (key_context.clone(), auth_value.clone()),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let key_handle = self
-            .tpm_ctx
-            .load(mk_key_handle, private, public)
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmHmacKeyLoad
-            })?;
-
-        // Now it's loaded, lets setup the context we will load/unload as needed. In this
-        // process we WILL be unloading the keyhandle.
-        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, hmac_key_handle| {
+        self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
             hsm_ctx
                 .tpm_ctx
-                .context_save(hmac_key_handle.into())
-                .map(|key_context| match algorithm {
-                    KeyAlgorithm::Ecdsa256 => IdentityKey::TpmEcdsa256 { key_context, x509 },
-                    KeyAlgorithm::Rsa2048 => IdentityKey::TpmRsa2048 { key_context, x509 },
-                })
+                .tr_set_auth(mk_key_handle.into(), auth_value)
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
-                    TpmError::TpmContextSave
-                })
+                    TpmError::TpmAuthValueInvalid
+                })?;
+
+            let key_handle = hsm_ctx
+                .tpm_ctx
+                .load(mk_key_handle.into(), private, public)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmHmacKeyLoad
+                })?;
+
+            // Now it's loaded, lets setup the context we will load/unload as needed. In this
+            // process we WILL be unloading the keyhandle.
+            hsm_ctx.execute_with_temporary_object(key_handle.into(), |hsm_ctx, hmac_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .context_save(hmac_key_handle.into())
+                    .map(|key_context| match algorithm {
+                        KeyAlgorithm::Ecdsa256 => IdentityKey::TpmEcdsa256 { key_context, x509 },
+                        KeyAlgorithm::Rsa2048 => IdentityKey::TpmRsa2048 { key_context, x509 },
+                    })
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmContextSave
+                    })
+            })
         })
     }
 
@@ -844,8 +901,11 @@ impl Tpm for TpmTss {
         &mut self,
         mk: &MachineKey,
     ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
-        let mk_key_handle = match mk {
-            MachineKey::Tpm { key_handle } => key_handle.clone(),
+        let (mk_key_context, auth_value) = match mk {
+            MachineKey::Tpm {
+                key_context,
+                auth_value,
+            } => (key_context.clone(), auth_value.clone()),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
@@ -888,22 +948,35 @@ impl Tpm for TpmTss {
                 TpmError::TpmMsRsaKeyBuilderInvalid
             })?;
 
-        let (private, public) = self
-            .tpm_ctx
-            .create(mk_key_handle.into(), key_pub, None, None, None, None)
-            .map(
-                |CreateKeyResult {
-                     out_private: private,
-                     out_public: public,
-                     creation_data: _,
-                     creation_hash: _,
-                     creation_ticket: _,
-                 }| (private, public),
-            )
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmMsRsaKeyCreate
-            })?;
+        let (private, public) = self.execute_with_temporary_object_context(
+            mk_key_context.clone(),
+            |hsm_ctx, mk_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .tr_set_auth(mk_key_handle.into(), auth_value.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmAuthValueInvalid
+                    })?;
+
+                hsm_ctx
+                    .tpm_ctx
+                    .create(mk_key_handle.into(), key_pub, None, None, None, None)
+                    .map(
+                        |CreateKeyResult {
+                             out_private: private,
+                             out_public: public,
+                             creation_data: _,
+                             creation_hash: _,
+                             creation_ticket: _,
+                         }| (private, public),
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmMsRsaKeyCreate
+                    })
+            },
+        )?;
 
         let object_attributes = ObjectAttributesBuilder::new()
             .with_fixed_tpm(true)
@@ -933,28 +1006,39 @@ impl Tpm for TpmTss {
                 TpmError::TpmMsRsaKeyBuilderInvalid
             })?;
 
-        self.tpm_ctx
-            .create(mk_key_handle.into(), key_pub, None, None, None, None)
-            .map(
-                |CreateKeyResult {
-                     out_private: cek_private,
-                     out_public: cek_public,
-                     creation_data: _,
-                     creation_hash: _,
-                     creation_ticket: _,
-                 }| {
-                    LoadableMsOapxbcRsaKey::TpmRsa2048V1 {
-                        private,
-                        public,
-                        cek_private,
-                        cek_public,
-                    }
-                },
-            )
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmMsRsaKeyCreate
-            })
+        self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .tr_set_auth(mk_key_handle.into(), auth_value)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmAuthValueInvalid
+                })?;
+
+            hsm_ctx
+                .tpm_ctx
+                .create(mk_key_handle.into(), key_pub, None, None, None, None)
+                .map(
+                    |CreateKeyResult {
+                         out_private: cek_private,
+                         out_public: cek_public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| {
+                        LoadableMsOapxbcRsaKey::TpmRsa2048V1 {
+                            private,
+                            public,
+                            cek_private,
+                            cek_public,
+                        }
+                    },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaKeyCreate
+                })
+        })
     }
 
     #[cfg(feature = "msextensions")]
@@ -987,54 +1071,85 @@ impl Tpm for TpmTss {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let mk_key_handle = match mk {
-            MachineKey::Tpm { key_handle } => key_handle.clone(),
+        let (mk_key_context, auth_value) = match mk {
+            MachineKey::Tpm {
+                key_context,
+                auth_value,
+            } => (key_context.clone(), auth_value.clone()),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let key_handle = self
-            .tpm_ctx
-            .load(mk_key_handle, cek_private, cek_public)
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmMsRsaKeyLoad
-            })?;
-
-        // Now it's loaded, lets setup the context we will load/unload as needed. In this
-        // process we WILL be unloading the keyhandle.
-        let cek_context =
-            self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, ms_rsa_key_handle| {
+        let cek_context = self.execute_with_temporary_object_context(
+            mk_key_context.clone(),
+            |hsm_ctx, mk_key_handle| {
                 hsm_ctx
                     .tpm_ctx
-                    .context_save(ms_rsa_key_handle.into())
+                    .tr_set_auth(mk_key_handle.into(), auth_value.clone())
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
-                        TpmError::TpmContextSave
-                    })
-            })?;
+                        TpmError::TpmAuthValueInvalid
+                    })?;
 
-        let key_handle = self
-            .tpm_ctx
-            .load(mk_key_handle, private, public)
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TpmMsRsaKeyLoad
-            })?;
+                let key_handle = hsm_ctx
+                    .tpm_ctx
+                    .load(mk_key_handle.into(), cek_private, cek_public)
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmMsRsaKeyLoad
+                    })?;
 
-        // Now it's loaded, lets setup the context we will load/unload as needed. In this
-        // process we WILL be unloading the keyhandle.
-        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, ms_rsa_key_handle| {
+                // Now it's loaded, lets setup the context we will load/unload as needed. In this
+                // process we WILL be unloading the keyhandle.
+                hsm_ctx.execute_with_temporary_object(
+                    key_handle.into(),
+                    |hsm_ctx, ms_rsa_key_handle| {
+                        hsm_ctx
+                            .tpm_ctx
+                            .context_save(ms_rsa_key_handle.into())
+                            .map_err(|tpm_err| {
+                                error!(?tpm_err);
+                                TpmError::TpmContextSave
+                            })
+                    },
+                )
+            },
+        )?;
+
+        self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
             hsm_ctx
                 .tpm_ctx
-                .context_save(ms_rsa_key_handle.into())
-                .map(|key_context| MsOapxbcRsaKey::Tpm {
-                    key_context,
-                    cek_context,
-                })
+                .tr_set_auth(mk_key_handle.into(), auth_value)
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
-                    TpmError::TpmContextSave
-                })
+                    TpmError::TpmAuthValueInvalid
+                })?;
+
+            let key_handle = hsm_ctx
+                .tpm_ctx
+                .load(mk_key_handle.into(), private, public)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaKeyLoad
+                })?;
+
+            // Now it's loaded, lets setup the context we will load/unload as needed. In this
+            // process we WILL be unloading the keyhandle.
+            hsm_ctx.execute_with_temporary_object(
+                key_handle.into(),
+                |hsm_ctx, ms_rsa_key_handle| {
+                    hsm_ctx
+                        .tpm_ctx
+                        .context_save(ms_rsa_key_handle.into())
+                        .map(|key_context| MsOapxbcRsaKey::Tpm {
+                            key_context,
+                            cek_context,
+                        })
+                        .map_err(|tpm_err| {
+                            error!(?tpm_err);
+                            TpmError::TpmContextSave
+                        })
+                },
+            )
         })
     }
 

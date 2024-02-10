@@ -263,8 +263,8 @@ pub enum MachineKey {
     },
     #[cfg(feature = "tpm")]
     Tpm {
-        // key_handle: tpm::KeyHandle,
         key_context: tpm::TpmsContext,
+        auth_value: tpm::Auth,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
@@ -1175,6 +1175,8 @@ mod ms_extn_tests {
             let machine_key = $tpm_a
                 .machine_key_load(&auth_value, &loadable_machine_key)
                 .expect("Unable to load machine key");
+
+            trace!("mk loaded");
 
             // from that ctx, create a hmac key.
             let loadable_ms_rsa_key = $tpm_a
