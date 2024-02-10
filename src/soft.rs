@@ -700,6 +700,7 @@ impl Tpm for SoftTpm {
     }
 }
 
+#[cfg(feature = "msextensions")]
 fn rsa_oaep_encrypt(
     key: &Rsa<openssl::pkey::Private>,
     key_to_wrap: &[u8],
@@ -759,6 +760,7 @@ fn rsa_oaep_encrypt(
     Ok(wrapped_key)
 }
 
+#[cfg(feature = "msextensions")]
 fn rsa_oaep_decrypt(
     key: &Rsa<openssl::pkey::Private>,
     input: &[u8],

@@ -18,12 +18,14 @@
 
 use argon2::MIN_SALT_LEN;
 use openssl::pkey::{PKey, Private};
-use openssl::rsa::Rsa;
 use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
 use zeroize::Zeroizing;
+
+#[cfg(feature = "msextensions")]
+use openssl::rsa::Rsa;
 
 pub(crate) const AES256GCM_KEY_LEN: usize = 32;
 pub(crate) const HMAC_KEY_LEN: usize = 32;
