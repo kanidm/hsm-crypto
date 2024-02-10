@@ -22,7 +22,7 @@ use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::error;
-use zeroize::Zeroizing;
+pub use zeroize::Zeroizing;
 
 #[cfg(feature = "msextensions")]
 use openssl::rsa::Rsa;
@@ -406,6 +406,34 @@ pub enum LoadableMsOapxbcSessionKey {
     TpmV1 { key: (), iv: () },
 }
 
+// For now it's ms extensions only, but we should add this to other parts
+// of the interface.
+#[cfg(feature = "msextensions")]
+pub enum SealedData {
+    // currently needs the parent to have a cek
+    SoftV1 {
+        data: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+    },
+    #[cfg(feature = "tpm")]
+    TpmV1 {
+        private: tpm::Private,
+        public: tpm::Public,
+        data: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmV1 {
+        private: (),
+        public: (),
+        data: (),
+        tag: (),
+        iv: (),
+    },
+}
+
 pub trait Tpm {
     fn machine_key_create(
         &mut self,
@@ -509,6 +537,20 @@ pub trait Tpm {
         &mut self,
         key: &MsOapxbcRsaKey,
         session_key: &LoadableMsOapxbcSessionKey,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_seal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        data: &[u8],
+    ) -> Result<SealedData, TpmError>;
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_unseal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        sealed_data: &SealedData,
     ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
 }
 
@@ -670,6 +712,24 @@ impl Tpm for BoxedDynTpm {
         session_key: &LoadableMsOapxbcSessionKey,
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
         self.0.msoapxbc_rsa_yield_session_key(key, session_key)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_seal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        data: &[u8],
+    ) -> Result<SealedData, TpmError> {
+        self.0.msoapxbc_rsa_seal_data(key, data)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_unseal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        self.0.msoapxbc_rsa_unseal_data(key, sealed_data)
     }
 }
 
@@ -1062,5 +1122,82 @@ mod tests {
 
         cert_builder.sign(&ca_key, MessageDigest::sha256()).unwrap();
         cert_builder.build()
+    }
+}
+
+#[cfg(all(test, feature = "msextensions"))]
+mod ms_extn_tests {
+    #[macro_export]
+    macro_rules! test_tpm_ms_extensions {
+        ( $tpm_a:expr ) => {
+            use crate::{AuthValue, Tpm};
+            use tracing::trace;
+
+            let _ = tracing_subscriber::fmt::try_init();
+
+            // Create a new random auth_value.
+            let auth_value = AuthValue::ephemeral().expect("Failed to generate new random secret");
+
+            // Request a new machine-key-context. This key "owns" anything
+            // created underneath it.
+            let loadable_machine_key = $tpm_a
+                .machine_key_create(&auth_value)
+                .expect("Unable to create new machine key");
+
+            trace!(?loadable_machine_key);
+
+            let machine_key = $tpm_a
+                .machine_key_load(&auth_value, &loadable_machine_key)
+                .expect("Unable to load machine key");
+
+            // from that ctx, create a hmac key.
+            let loadable_ms_rsa_key = $tpm_a
+                .msoapxbc_rsa_key_create(&machine_key)
+                .expect("Unable to create new hmac key");
+
+            trace!(?loadable_ms_rsa_key);
+
+            let ms_rsa_key = $tpm_a
+                .msoapxbc_rsa_key_load(&machine_key, &loadable_ms_rsa_key)
+                .expect("Unable to load ms rsa key");
+
+            // Get the public key as DER
+            let ms_rsa_key_public_der = $tpm_a
+                .msoapxbc_rsa_public_as_der(&ms_rsa_key)
+                .expect("Unable to retrieve key as DER");
+
+            let rsa_public = openssl::rsa::Rsa::public_key_from_der(&ms_rsa_key_public_der)
+                .expect("Invalid public key");
+
+            let secret = &[0, 1, 2, 3];
+
+            // Create something for the key to decrypt.
+            let encrypted_secret =
+                crate::soft::rsa_oaep_encrypt(&rsa_public, secret).expect("unable to wrap key");
+
+            // Decrypt it.
+
+            let loadable_session_key = $tpm_a
+                .msoapxbc_rsa_decipher_session_key(&ms_rsa_key, &encrypted_secret, secret.len())
+                .expect("Unable to decipher encrypted secret");
+
+            let yielded_session_key = $tpm_a
+                .msoapxbc_rsa_yield_session_key(&ms_rsa_key, &loadable_session_key)
+                .expect("unable to load session key");
+
+            assert_eq!(yielded_session_key.as_slice(), secret);
+
+            // Seal and unseal some data.
+
+            let sealed_secret = $tpm_a
+                .msoapxbc_rsa_seal_data(&ms_rsa_key, secret)
+                .expect("Unable to seal");
+
+            let unsealed_secret = $tpm_a
+                .msoapxbc_rsa_unseal_data(&ms_rsa_key, &sealed_secret)
+                .expect("Unable to unseal");
+
+            assert_eq!(unsealed_secret.as_slice(), secret);
+        };
     }
 }

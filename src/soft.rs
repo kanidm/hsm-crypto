@@ -5,7 +5,7 @@ use crate::{
 use zeroize::Zeroizing;
 
 #[cfg(feature = "msextensions")]
-use crate::{LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey};
+use crate::{LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey, SealedData};
 
 use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::{hash, MessageDigest};
@@ -668,8 +668,6 @@ impl Tpm for SoftTpm {
                     TpmError::Entropy
                 })?;
 
-                eprintln!("{:?}", cek);
-
                 let (enc_session_key, tag) =
                     aes_256_gcm_encrypt(unwrapped_key.as_ref(), cek.as_ref(), &iv)?;
 
@@ -698,11 +696,52 @@ impl Tpm for SoftTpm {
             (_, _) => Err(TpmError::IncorrectKeyType),
         }
     }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_seal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        data: &[u8],
+    ) -> Result<SealedData, TpmError> {
+        match key {
+            MsOapxbcRsaKey::Soft { key: _, cek } => {
+                // Bind to the parent's cek
+                let mut iv = [0; 16];
+                rand_bytes(&mut iv).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::Entropy
+                })?;
+
+                let (enc_data, tag) = aes_256_gcm_encrypt(data, cek.as_ref(), &iv)?;
+
+                Ok(SealedData::SoftV1 {
+                    data: enc_data,
+                    tag,
+                    iv,
+                })
+            }
+            _ => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_unseal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        match (key, sealed_data) {
+            (MsOapxbcRsaKey::Soft { key: _, cek }, SealedData::SoftV1 { data, tag, iv }) => {
+                aes_256_gcm_decrypt(data, tag, &cek, iv)
+            }
+            (_, _) => Err(TpmError::IncorrectKeyType),
+        }
+    }
 }
 
 #[cfg(feature = "msextensions")]
-fn rsa_oaep_encrypt(
-    key: &Rsa<openssl::pkey::Private>,
+pub(crate) fn rsa_oaep_encrypt<T: openssl::pkey::HasPublic>(
+    key: &Rsa<T>,
     key_to_wrap: &[u8],
 ) -> Result<Vec<u8>, TpmError> {
     use openssl::encrypt::Encrypter;
@@ -966,5 +1005,17 @@ mod tests {
         let mut hsm = SoftTpm::new();
 
         crate::test_tpm_identity_csr!(hsm, KeyAlgorithm::Ecdsa256);
+    }
+}
+
+#[cfg(all(test, feature = "msextensions"))]
+mod ms_extn_tests {
+    use crate::soft::SoftTpm;
+
+    #[test]
+    fn soft_ms_extensions() {
+        let mut hsm = SoftTpm::new();
+
+        crate::test_tpm_ms_extensions!(hsm);
     }
 }
