@@ -198,7 +198,7 @@ impl Tpm for TpmTss {
                 let unique_key_identifier = hsm_ctx
                     .tpm_ctx
                     .get_random(16)
-                    .and_then(|random| Digest::try_from(random.as_slice()))
+                    .and_then(|random| Digest::from_bytes(random.as_slice()))
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
                         TpmError::TpmEntropy
@@ -234,7 +234,7 @@ impl Tpm for TpmTss {
                     })?;
 
                 let tpm_auth_value = match auth_value {
-                    AuthValue::Key256Bit { auth_key } => Auth::try_from(auth_key.as_ref()),
+                    AuthValue::Key256Bit { auth_key } => Auth::from_bytes(auth_key.as_ref()),
                 }
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
@@ -291,7 +291,7 @@ impl Tpm for TpmTss {
             primary.key_handle.into(),
             |hsm_ctx, primary_key_handle| {
                 let tpm_auth_value = match auth_value {
-                    AuthValue::Key256Bit { auth_key } => Auth::try_from(auth_key.as_ref()),
+                    AuthValue::Key256Bit { auth_key } => Auth::from_bytes(auth_key.as_ref()),
                 }
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
@@ -325,7 +325,7 @@ impl Tpm for TpmTss {
         let unique_key_identifier = self
             .tpm_ctx
             .get_random(16)
-            .and_then(|random| Digest::try_from(random.as_slice()))
+            .and_then(|random| Digest::from_bytes(random.as_slice()))
             .map_err(|tpm_err| {
                 error!(?tpm_err);
                 TpmError::TpmEntropy
@@ -418,7 +418,7 @@ impl Tpm for TpmTss {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let data_buffer = MaxBuffer::try_from(input).map_err(|tpm_err| {
+        let data_buffer = MaxBuffer::from_bytes(input).map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::TpmHmacInputTooLarge
         })?;
@@ -427,7 +427,7 @@ impl Tpm for TpmTss {
             hsm_ctx
                 .tpm_ctx
                 .hmac(key_handle.into(), data_buffer, hk_alg)
-                .map(|digest| digest.value().to_vec())
+                .map(|digest| digest.as_bytes().to_vec())
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
                     TpmError::TpmHmacSign
@@ -652,7 +652,7 @@ impl Tpm for TpmTss {
             TpmError::IdentityKeyDigest
         })?;
 
-        let tpm_digest: Digest = Digest::try_from(&bytes as &[u8]).map_err(|tpm_err| {
+        let tpm_digest: Digest = Digest::from_bytes(&bytes as &[u8]).map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::IdentityKeyDigest
         })?;
@@ -752,7 +752,7 @@ impl Tpm for TpmTss {
                 key_context,
                 x509: _,
             } => {
-                let pk_rsa = PublicKeyRsa::try_from(signature).map_err(|tpm_err| {
+                let pk_rsa = PublicKeyRsa::from_bytes(signature).map_err(|tpm_err| {
                     error!(?tpm_err);
                     TpmError::TpmIdentityKeyParamInvalid
                 })?;
@@ -775,7 +775,7 @@ impl Tpm for TpmTss {
             TpmError::IdentityKeyDigest
         })?;
 
-        let tpm_digest: Digest = Digest::try_from(&bytes as &[u8]).map_err(|tpm_err| {
+        let tpm_digest: Digest = Digest::from_bytes(&bytes as &[u8]).map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::IdentityKeyDigest
         })?;
