@@ -1,7 +1,9 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError,
+    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
 };
+
+use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
 
 use openssl::bn::BigNum;
 use openssl::ecdsa::EcdsaSig;
@@ -14,11 +16,12 @@ use tracing::error;
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
 use tss_esapi::structures::{
-    Auth, CreateKeyResult, CreatePrimaryKeyResult, Digest, EccParameter, EccPoint, EccScheme,
+    Auth, CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccParameter, EccPoint, EccScheme,
     EccSignature, HashScheme, HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder,
     PublicEccParametersBuilder, PublicKeyRsa, PublicKeyedHashParameters,
-    PublicRsaParametersBuilder, RsaExponent, RsaScheme, RsaSignature, Signature, SignatureScheme,
-    SymmetricCipherParameters, SymmetricDefinition, SymmetricDefinitionObject,
+    PublicRsaParametersBuilder, RsaDecryptionScheme, RsaExponent, RsaScheme, RsaSignature,
+    SensitiveData, Signature, SignatureScheme, SymmetricCipherParameters, SymmetricDefinition,
+    SymmetricDefinitionObject,
 };
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
@@ -38,6 +41,11 @@ use tss_esapi::handles::ObjectHandle;
 pub use tss_esapi::handles::KeyHandle;
 pub use tss_esapi::structures::{Private, Public};
 pub use tss_esapi::utils::TpmsContext;
+
+#[cfg(feature = "msextensions")]
+use crate::{LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey, SealedData};
+#[cfg(feature = "msextensions")]
+use zeroize::Zeroizing;
 
 use std::str::FromStr;
 
@@ -151,7 +159,8 @@ impl TpmTss {
     {
         let res = f(self, object);
 
-        self.tpm_ctx.flush_context(object).map_err(|tpm_err| {
+        self.tpm_ctx.flush_context(object)
+        .map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::TpmContextFlushObject
         })?;
@@ -829,6 +838,547 @@ impl Tpm for TpmTss {
     fn identity_key_x509_as_der(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
         Err(TpmError::TpmOperationUnsupported)
     }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_create(
+        &mut self,
+        mk: &MachineKey,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
+        let mk_key_handle = match mk {
+            MachineKey::Tpm { key_handle } => key_handle.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .with_decrypt(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        let rsa_params = PublicRsaParametersBuilder::new()
+            .with_scheme(RsaScheme::Null)
+            .with_key_bits(RsaKeyBits::Rsa2048)
+            .with_exponent(RsaExponent::default())
+            .with_is_decryption_key(true)
+            .with_is_signing_key(true)
+            .with_restricted(false)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyAlgorithmInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::Rsa)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_rsa_parameters(rsa_params)
+            .with_rsa_unique_identifier(PublicKeyRsa::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyBuilderInvalid
+            })?;
+
+        let (private, public) = self
+            .tpm_ctx
+            .create(mk_key_handle.into(), key_pub, None, None, None, None)
+            .map(
+                |CreateKeyResult {
+                     out_private: private,
+                     out_public: public,
+                     creation_data: _,
+                     creation_hash: _,
+                     creation_ticket: _,
+                 }| (private, public),
+            )
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyCreate
+            })?;
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_decrypt(true)
+            .with_restricted(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::SymCipher)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_symmetric_cipher_parameters(SymmetricCipherParameters::new(
+                SymmetricDefinitionObject::AES_128_CFB,
+            ))
+            .with_symmetric_cipher_unique_identifier(Digest::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyBuilderInvalid
+            })?;
+
+        self.tpm_ctx
+            .create(mk_key_handle.into(), key_pub, None, None, None, None)
+            .map(
+                |CreateKeyResult {
+                     out_private: cek_private,
+                     out_public: cek_public,
+                     creation_data: _,
+                     creation_hash: _,
+                     creation_ticket: _,
+                 }| {
+                    LoadableMsOapxbcRsaKey::TpmRsa2048V1 {
+                        private,
+                        public,
+                        cek_private,
+                        cek_public,
+                    }
+                },
+            )
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyCreate
+            })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_import(
+        &mut self,
+        _mk: &MachineKey,
+        _private_key: openssl::rsa::Rsa<openssl::pkey::Private>,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
+        Err(TpmError::TpmOperationUnsupported)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_load(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableMsOapxbcRsaKey,
+    ) -> Result<MsOapxbcRsaKey, TpmError> {
+        let (private, public, cek_private, cek_public) = match loadable_key {
+            LoadableMsOapxbcRsaKey::TpmRsa2048V1 {
+                private,
+                public,
+                cek_private,
+                cek_public,
+            } => (
+                private.clone(),
+                public.clone(),
+                cek_private.clone(),
+                cek_public.clone(),
+            ),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let mk_key_handle = match mk {
+            MachineKey::Tpm { key_handle } => key_handle.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let key_handle = self
+            .tpm_ctx
+            .load(mk_key_handle, cek_private, cek_public)
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyLoad
+            })?;
+
+        // Now it's loaded, lets setup the context we will load/unload as needed. In this
+        // process we WILL be unloading the keyhandle.
+        let cek_context =
+            self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, ms_rsa_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .context_save(ms_rsa_key_handle.into())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmContextSave
+                    })
+            })?;
+
+        let key_handle = self
+            .tpm_ctx
+            .load(mk_key_handle, private, public)
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyLoad
+            })?;
+
+        // Now it's loaded, lets setup the context we will load/unload as needed. In this
+        // process we WILL be unloading the keyhandle.
+        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, ms_rsa_key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .context_save(ms_rsa_key_handle.into())
+                .map(|key_context| MsOapxbcRsaKey::Tpm {
+                    key_context,
+                    cek_context,
+                })
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmContextSave
+                })
+        })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_public_as_der(&mut self, key: &MsOapxbcRsaKey) -> Result<Vec<u8>, TpmError> {
+        let key_context = match key {
+            MsOapxbcRsaKey::Tpm {
+                key_context,
+                cek_context: _,
+            } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let (public, _, _) =
+            self.execute_with_temporary_object_context(key_context, |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .read_public(key_handle.into())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmMsRsaKeyReadPublic
+                    })
+            })?;
+
+        let (params, unique) = match public {
+            Public::Rsa {
+                parameters, unique, ..
+            } => (parameters, unique),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        // This is a big endian signed value as expected
+        let n = BigNum::from_slice(unique.as_slice()).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::RsaPublicFromComponents
+        })?;
+
+        // Gotcha https://docs.rs/tss-esapi/latest/src/tss_esapi/abstraction/public.rs.html#81
+        // If value == 0, set default of 65537
+        let mut e_u32 = params.exponent().value();
+        if e_u32 == 0 {
+            e_u32 = 65537;
+        };
+
+        let e = BigNum::from_u32(e_u32).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::RsaPublicFromComponents
+        })?;
+
+        let rsa_public = openssl::rsa::Rsa::from_public_components(n, e).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::RsaPublicFromComponents
+        })?;
+
+        rsa_public.public_key_to_der().map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyPublicToDer
+        })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        input: &[u8],
+        expected_key_len: usize,
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
+        let (key_context, cek_context) = match key {
+            MsOapxbcRsaKey::Tpm {
+                key_context,
+                cek_context,
+            } => (key_context.clone(), cek_context.clone()),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let encrypted_input = PublicKeyRsa::try_from(input.to_vec())
+            .map_err(|_| TpmError::TpmMsRsaOaepInvalidKeyLength)?;
+
+        let decrypted_session_key = self.execute_with_temporary_object_context(
+            key_context.clone(),
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .rsa_decrypt(
+                        key_handle.into(),
+                        encrypted_input,
+                        RsaDecryptionScheme::Oaep(HashScheme::new(HashingAlgorithm::Sha1)),
+                        Data::default(),
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmMsRsaOaepDecrypt
+                    })
+            },
+        )?;
+
+        // Truncate - note this is a slice, and everything here is zeroizing.
+        // to minimise exposure.
+        let session_key = decrypted_session_key
+            .get(0..expected_key_len)
+            .ok_or(TpmError::TpmMsRsaOaepInvalidKeyLength)?;
+
+        let session_key = SensitiveData::try_from(session_key.to_vec())
+            .map_err(|_| TpmError::TpmMsRsaOaepInvalidKeyLength)?;
+
+        // Seal it.
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_user_with_auth(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::KeyedHash)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(KeyedHashScheme::Null))
+            .with_keyed_hash_unique_identifier(Digest::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        // NOTE: We use the cek_context here to seal the data against since the RSA key
+        // can not act as a storage key.
+        self.execute_with_temporary_object_context(cek_context, |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .create(
+                    key_handle.into(),
+                    key_pub,
+                    None,
+                    Some(session_key),
+                    None,
+                    None,
+                )
+                .map(
+                    |CreateKeyResult {
+                         out_private: private,
+                         out_public: public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| {
+                        LoadableMsOapxbcSessionKey::TpmV1 { private, public }
+                    },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaSeal
+                })
+        })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_yield_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        let key_context = match key {
+            MsOapxbcRsaKey::Tpm {
+                key_context: _,
+                cek_context,
+            } => cek_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let (private, public) = match session_key {
+            LoadableMsOapxbcSessionKey::TpmV1 { private, public } => {
+                (private.clone(), public.clone())
+            }
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        self.execute_with_temporary_object_context(key_context, |hsm_ctx, key_handle| {
+            let sealed_object = hsm_ctx
+                .tpm_ctx
+                .load(key_handle.into(), private, public)
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaKeyLoad
+                })?;
+
+            hsm_ctx
+                .tpm_ctx
+                .unseal(sealed_object.into())
+                .map(|data| Zeroizing::new(Vec::from(data.as_slice())))
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaUnseal
+                })
+        })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_seal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        data: &[u8],
+    ) -> Result<SealedData, TpmError> {
+        let cek_context = match key {
+            MsOapxbcRsaKey::Tpm {
+                key_context: _,
+                cek_context,
+            } => cek_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let mut iv = [0; AES256GCM_IV_LEN];
+        self.tpm_ctx
+            .get_random(AES256GCM_IV_LEN)
+            .map(|random| iv.copy_from_slice(random.as_slice()))
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmEntropy
+            })?;
+
+        let unsealed_key = self
+            .tpm_ctx
+            .get_random(AES256GCM_KEY_LEN)
+            .and_then(|random| SensitiveData::from_bytes(random.as_slice()))
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmEntropy
+            })?;
+
+        let (data, tag) = aes_256_gcm_encrypt(data, unsealed_key.as_slice(), &iv)?;
+
+        // Seal it.
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_user_with_auth(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::KeyedHash)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(KeyedHashScheme::Null))
+            .with_keyed_hash_unique_identifier(Digest::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        self.execute_with_temporary_object_context(cek_context, |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .create(
+                    key_handle.into(),
+                    key_pub,
+                    None,
+                    Some(unsealed_key),
+                    None,
+                    None,
+                )
+                .map(
+                    |CreateKeyResult {
+                         out_private: private,
+                         out_public: public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| {
+                        SealedData::TpmV1 {
+                            private,
+                            public,
+                            data,
+                            tag,
+                            iv,
+                        }
+                    },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaSeal
+                })
+        })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_unseal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        let key_context = match key {
+            MsOapxbcRsaKey::Tpm {
+                key_context: _,
+                cek_context,
+            } => cek_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        match sealed_data {
+            SealedData::TpmV1 {
+                private,
+                public,
+                data,
+                tag,
+                iv,
+            } => {
+                let unsealed_key = self.execute_with_temporary_object_context(
+                    key_context,
+                    |hsm_ctx, key_handle| {
+                        let sealed_object = hsm_ctx
+                            .tpm_ctx
+                            .load(key_handle.into(), private.clone(), public.clone())
+                            .map_err(|tpm_err| {
+                                error!(?tpm_err);
+                                TpmError::TpmMsRsaKeyLoad
+                            })?;
+
+                        hsm_ctx
+                            .tpm_ctx
+                            .unseal(sealed_object.into())
+                            .map(|data| Zeroizing::new(Vec::from(data.as_slice())))
+                            .map_err(|tpm_err| {
+                                error!(?tpm_err);
+                                TpmError::TpmMsRsaUnseal
+                            })
+                    },
+                )?;
+
+                // Decrypt now.
+                aes_256_gcm_decrypt(data, tag, unsealed_key.as_slice(), iv)
+            }
+            _ => return Err(TpmError::IncorrectKeyType),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -862,5 +1412,17 @@ mod tests {
         let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
         crate::test_tpm_identity_no_export!(hsm, KeyAlgorithm::Rsa2048);
+    }
+}
+
+#[cfg(all(test, feature = "msextensions"))]
+mod ms_extn_tests {
+    use super::TpmTss;
+
+    #[test]
+    fn tpm_ms_extensions() {
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        crate::test_tpm_ms_extensions!(hsm);
     }
 }

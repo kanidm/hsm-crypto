@@ -28,6 +28,7 @@ pub use zeroize::Zeroizing;
 use openssl::rsa::Rsa;
 
 pub(crate) const AES256GCM_KEY_LEN: usize = 32;
+pub(crate) const AES256GCM_IV_LEN: usize = 16;
 pub(crate) const HMAC_KEY_LEN: usize = 32;
 
 pub mod soft;
@@ -162,6 +163,7 @@ pub enum TpmError {
     RsaPrivateToDer,
     RsaKeyFromDer,
     RsaToPrivateKey,
+    RsaPublicFromComponents,
     X509FromDer,
     X509PublicKey,
     X509KeyMismatch,
@@ -222,6 +224,17 @@ pub enum TpmError {
     TpmIdentityKeyParamsToEcdsaSig,
     TpmIdentityKeyVerify,
 
+    TpmMsRsaKeyObjectAttributesInvalid,
+    TpmMsRsaKeyAlgorithmInvalid,
+    TpmMsRsaKeyBuilderInvalid,
+    TpmMsRsaKeyCreate,
+    TpmMsRsaKeyLoad,
+    TpmMsRsaKeyReadPublic,
+    TpmMsRsaOaepDecrypt,
+    TpmMsRsaOaepInvalidKeyLength,
+    TpmMsRsaSeal,
+    TpmMsRsaUnseal,
+
     TpmOperationUnsupported,
 
     Entropy,
@@ -250,11 +263,12 @@ pub enum MachineKey {
     },
     #[cfg(feature = "tpm")]
     Tpm {
-        key_handle: tpm::KeyHandle,
+        // key_handle: tpm::KeyHandle,
+        key_context: tpm::TpmsContext,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
-        key_handle: (),
+        key_context: (),
     },
 }
 
@@ -360,11 +374,8 @@ impl IdentityKey {
     }
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    all(feature = "msextensions", not(feature = "tpm")),
-    derive(Serialize, Deserialize)
-)]
+#[cfg(feature = "msextensions")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableMsOapxbcRsaKey {
     Soft2048V1 {
         key: Vec<u8>,
@@ -376,9 +387,16 @@ pub enum LoadableMsOapxbcRsaKey {
     TpmRsa2048V1 {
         private: tpm::Private,
         public: tpm::Public,
+        cek_private: tpm::Private,
+        cek_public: tpm::Public,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmRsa2048V1 { private: (), public: () },
+    TpmRsa2048V1 {
+        private: (),
+        public: (),
+        cek_private: (),
+        cek_public: (),
+    },
 }
 
 #[cfg(feature = "msextensions")]
@@ -388,12 +406,16 @@ pub enum MsOapxbcRsaKey {
         cek: Zeroizing<Vec<u8>>,
     },
     #[cfg(feature = "tpm")]
-    Tpm { key_context: tpm::TpmsContext },
+    Tpm {
+        key_context: tpm::TpmsContext,
+        cek_context: tpm::TpmsContext,
+    },
     #[cfg(not(feature = "tpm"))]
     Tpm { key_context: () },
 }
 
 #[cfg(feature = "msextensions")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableMsOapxbcSessionKey {
     SoftV1 {
         key: Vec<u8>,
@@ -401,14 +423,18 @@ pub enum LoadableMsOapxbcSessionKey {
         iv: [u8; 16],
     },
     #[cfg(feature = "tpm")]
-    TpmV1 { key: Vec<u8>, iv: [u8; 16] },
+    TpmV1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
     #[cfg(not(feature = "tpm"))]
-    TpmV1 { key: (), iv: () },
+    TpmV1 { private: (), public: () },
 }
 
 // For now it's ms extensions only, but we should add this to other parts
 // of the interface.
 #[cfg(feature = "msextensions")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SealedData {
     // currently needs the parent to have a cek
     SoftV1 {
@@ -1166,8 +1192,12 @@ mod ms_extn_tests {
                 .msoapxbc_rsa_public_as_der(&ms_rsa_key)
                 .expect("Unable to retrieve key as DER");
 
+            trace!(?ms_rsa_key_public_der);
+
             let rsa_public = openssl::rsa::Rsa::public_key_from_der(&ms_rsa_key_public_der)
                 .expect("Invalid public key");
+
+            trace!(?rsa_public);
 
             let secret = &[0, 1, 2, 3];
 
@@ -1175,11 +1205,15 @@ mod ms_extn_tests {
             let encrypted_secret =
                 crate::soft::rsa_oaep_encrypt(&rsa_public, secret).expect("unable to wrap key");
 
+            trace!(?encrypted_secret);
+
             // Decrypt it.
 
             let loadable_session_key = $tpm_a
                 .msoapxbc_rsa_decipher_session_key(&ms_rsa_key, &encrypted_secret, secret.len())
                 .expect("Unable to decipher encrypted secret");
+
+            trace!(?loadable_session_key);
 
             let yielded_session_key = $tpm_a
                 .msoapxbc_rsa_yield_session_key(&ms_rsa_key, &loadable_session_key)
@@ -1188,6 +1222,8 @@ mod ms_extn_tests {
             assert_eq!(yielded_session_key.as_slice(), secret);
 
             // Seal and unseal some data.
+
+            trace!("=====================");
 
             let sealed_secret = $tpm_a
                 .msoapxbc_rsa_seal_data(&ms_rsa_key, secret)

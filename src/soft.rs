@@ -1,6 +1,7 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_KEY_LEN, HMAC_KEY_LEN,
+    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
+    HMAC_KEY_LEN,
 };
 use zeroize::Zeroizing;
 
@@ -41,7 +42,7 @@ impl Tpm for SoftTpm {
         })?;
 
         // Encrypt it.
-        let mut iv = [0; 16];
+        let mut iv = [0; AES256GCM_IV_LEN];
         rand_bytes(&mut iv).map_err(|ossl_err| {
             error!(?ossl_err);
             TpmError::Entropy
@@ -857,7 +858,7 @@ fn rsa_oaep_decrypt(
     Ok(unwrapped_key)
 }
 
-fn aes_256_gcm_encrypt(
+pub(crate) fn aes_256_gcm_encrypt(
     input: &[u8],
     key: &[u8],
     iv: &[u8],
@@ -896,7 +897,7 @@ fn aes_256_gcm_encrypt(
     Ok((ciphertext, tag))
 }
 
-fn aes_256_gcm_decrypt(
+pub(crate) fn aes_256_gcm_decrypt(
     input: &[u8],
     tag: &[u8],
     key: &[u8],
