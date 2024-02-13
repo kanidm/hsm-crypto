@@ -149,6 +149,8 @@ pub enum TpmError {
     EcKeyPrivateToDer,
     EcKeyFromDer,
     EcKeyToPrivateKey,
+    EcdsaPublicFromComponents,
+    EcdsaPublicToDer,
     IdentityKeyDigest,
     IdentityKeyPublicToDer,
     IdentityKeyPublicToPem,
@@ -162,6 +164,7 @@ pub enum TpmError {
     RsaGenerate,
     RsaPrivateToDer,
     RsaKeyFromDer,
+    RsaPublicToDer,
     RsaToPrivateKey,
     RsaPublicFromComponents,
     X509FromDer,
@@ -196,11 +199,17 @@ pub enum TpmError {
     TpmMachineKeyBuilderInvalid,
     TpmMachineKeyCreate,
     TpmMachineKeyLoad,
+    TpmKeyLoad,
+
+    TpmMsRsaKeyLoad,
+    TpmHmacKeyLoad,
+
+    TpmStorageKeyObjectAttributesInvalid,
+    TpmStorageKeyBuilderInvalid,
 
     TpmHmacKeyObjectAttributesInvalid,
     TpmHmacKeyBuilderInvalid,
     TpmHmacKeyCreate,
-    TpmHmacKeyLoad,
     TpmHmacSign,
     TpmHmacInputTooLarge,
 
@@ -228,7 +237,6 @@ pub enum TpmError {
     TpmMsRsaKeyAlgorithmInvalid,
     TpmMsRsaKeyBuilderInvalid,
     TpmMsRsaKeyCreate,
-    TpmMsRsaKeyLoad,
     TpmMsRsaKeyReadPublic,
     TpmMsRsaOaepDecrypt,
     TpmMsRsaOaepInvalidKeyLength,
@@ -252,9 +260,16 @@ pub enum LoadableMachineKey {
     TpmAes128CfbV1 {
         private: tpm::Private,
         public: tpm::Public,
+        sk_private: tpm::Private,
+        sk_public: tpm::Public,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmAes128CfbV1 { private: (), public: () },
+    TpmAes128CfbV1 {
+        private: (),
+        public: (),
+        sk_private: (),
+        sk_public: (),
+    },
 }
 
 pub enum MachineKey {
@@ -264,7 +279,6 @@ pub enum MachineKey {
     #[cfg(feature = "tpm")]
     Tpm {
         key_context: tpm::TpmsContext,
-        auth_value: tpm::Auth,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
@@ -843,58 +857,6 @@ mod tests {
     }
 
     #[macro_export]
-    macro_rules! test_tpm_identity_no_export {
-        ( $tpm:expr, $alg:expr ) => {
-            use crate::{AuthValue, Tpm};
-            use std::str::FromStr;
-            use tracing::trace;
-
-            let _ = tracing_subscriber::fmt::try_init();
-
-            let auth_str = AuthValue::generate().expect("Failed to create hex pin");
-
-            let auth_value = AuthValue::from_str(&auth_str).expect("Unable to create auth value");
-
-            // Request a new machine-key-context. This key "owns" anything
-            // created underneath it.
-            let loadable_machine_key = $tpm
-                .machine_key_create(&auth_value)
-                .expect("Unable to create new machine key");
-
-            trace!(?loadable_machine_key);
-
-            let machine_key = $tpm
-                .machine_key_load(&auth_value, &loadable_machine_key)
-                .expect("Unable to load machine key");
-
-            // from that ctx, create an identity key
-            let loadable_id_key = $tpm
-                .identity_key_create(&machine_key, $alg)
-                .expect("Unable to create id key");
-
-            trace!(?loadable_id_key);
-
-            let id_key = $tpm
-                .identity_key_load(&machine_key, &loadable_id_key)
-                .expect("Unable to load id key");
-
-            let input = "test string";
-            let signature = $tpm
-                .identity_key_sign(&id_key, input.as_bytes())
-                .expect("Unable to sign input");
-
-            trace!(?signature);
-
-            let verify = $tpm.identity_key_verify(&id_key, input.as_bytes(), signature.as_slice());
-
-            trace!(?verify);
-
-            // Internal verification
-            assert!(verify.expect("Unable to sign input"));
-        };
-    }
-
-    #[macro_export]
     macro_rules! test_tpm_identity {
         ( $tpm:expr, $alg:expr ) => {
             use crate::{AuthValue, Tpm};
@@ -947,6 +909,8 @@ mod tests {
             // Rehydrate the der to a public key.
             let public_key = PKey::public_key_from_der(&id_key_public_der).expect("Invalid DER");
 
+            trace!(?public_key);
+
             let input = "test string";
             let signature = $tpm
                 .identity_key_sign(&id_key, input.as_bytes())
@@ -960,6 +924,15 @@ mod tests {
             // External verification.
             let mut verifier = Verifier::new(MessageDigest::sha256(), &public_key)
                 .expect("Unable to setup verifier.");
+
+            match $alg {
+                KeyAlgorithm::Rsa2048 => {
+                    verifier
+                        .set_rsa_padding(openssl::rsa::Padding::PKCS1)
+                        .unwrap();
+                }
+                _ => {}
+            }
 
             let valid = verifier
                 .verify_oneshot(&signature, input.as_bytes())
@@ -1157,7 +1130,6 @@ mod ms_extn_tests {
     macro_rules! test_tpm_ms_extensions {
         ( $tpm_a:expr ) => {
             use crate::{AuthValue, Tpm};
-            use tracing::trace;
 
             let _ = tracing_subscriber::fmt::try_init();
 
@@ -1170,20 +1142,14 @@ mod ms_extn_tests {
                 .machine_key_create(&auth_value)
                 .expect("Unable to create new machine key");
 
-            trace!(?loadable_machine_key);
-
             let machine_key = $tpm_a
                 .machine_key_load(&auth_value, &loadable_machine_key)
                 .expect("Unable to load machine key");
-
-            trace!("mk loaded");
 
             // from that ctx, create a hmac key.
             let loadable_ms_rsa_key = $tpm_a
                 .msoapxbc_rsa_key_create(&machine_key)
                 .expect("Unable to create new hmac key");
-
-            trace!(?loadable_ms_rsa_key);
 
             let ms_rsa_key = $tpm_a
                 .msoapxbc_rsa_key_load(&machine_key, &loadable_ms_rsa_key)
@@ -1194,12 +1160,8 @@ mod ms_extn_tests {
                 .msoapxbc_rsa_public_as_der(&ms_rsa_key)
                 .expect("Unable to retrieve key as DER");
 
-            trace!(?ms_rsa_key_public_der);
-
             let rsa_public = openssl::rsa::Rsa::public_key_from_der(&ms_rsa_key_public_der)
                 .expect("Invalid public key");
-
-            trace!(?rsa_public);
 
             let secret = &[0, 1, 2, 3];
 
@@ -1207,15 +1169,11 @@ mod ms_extn_tests {
             let encrypted_secret =
                 crate::soft::rsa_oaep_encrypt(&rsa_public, secret).expect("unable to wrap key");
 
-            trace!(?encrypted_secret);
-
             // Decrypt it.
 
             let loadable_session_key = $tpm_a
                 .msoapxbc_rsa_decipher_session_key(&ms_rsa_key, &encrypted_secret, secret.len())
                 .expect("Unable to decipher encrypted secret");
-
-            trace!(?loadable_session_key);
 
             let yielded_session_key = $tpm_a
                 .msoapxbc_rsa_yield_session_key(&ms_rsa_key, &loadable_session_key)
@@ -1224,8 +1182,6 @@ mod ms_extn_tests {
             assert_eq!(yielded_session_key.as_slice(), secret);
 
             // Seal and unseal some data.
-
-            trace!("=====================");
 
             let sealed_secret = $tpm_a
                 .msoapxbc_rsa_seal_data(&ms_rsa_key, secret)

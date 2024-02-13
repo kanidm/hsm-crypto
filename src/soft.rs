@@ -13,7 +13,7 @@ use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rand::rand_bytes;
-use openssl::rsa::Rsa;
+use openssl::rsa::{Padding, Rsa};
 use openssl::sign::{Signer, Verifier};
 use openssl::symm::{Cipher, Crypter, Mode};
 use openssl::x509::{X509NameBuilder, X509ReqBuilder, X509};
@@ -394,12 +394,19 @@ impl Tpm for SoftTpm {
 
     fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
         let mut signer = match key {
-            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
-            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ } => {
                 Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
                     error!(?ossl_err);
                     TpmError::IdentityKeyInvalidForSigning
                 })?
+            }
+            IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
+                Signer::new(MessageDigest::sha256(), pkey)
+                    .and_then(|mut signer| signer.set_rsa_padding(Padding::PKCS1).map(|()| signer))
+                    .map_err(|ossl_err| {
+                        error!(?ossl_err);
+                        TpmError::IdentityKeyInvalidForSigning
+                    })?
             }
             IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
                 return Err(TpmError::IncorrectKeyType)
@@ -628,7 +635,7 @@ impl Tpm for SoftTpm {
                     TpmError::RsaKeyFromDer
                 })?;
 
-                let mut cek = rsa_oaep_decrypt(&key, &cek)?;
+                let mut cek = rsa_oaep_decrypt(&key, cek)?;
 
                 cek.truncate(AES256GCM_KEY_LEN);
 
@@ -733,7 +740,7 @@ impl Tpm for SoftTpm {
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
         match (key, sealed_data) {
             (MsOapxbcRsaKey::Soft { key: _, cek }, SealedData::SoftV1 { data, tag, iv }) => {
-                aes_256_gcm_decrypt(data, tag, &cek, iv)
+                aes_256_gcm_decrypt(data, tag, cek, iv)
             }
             (_, _) => Err(TpmError::IncorrectKeyType),
         }
@@ -746,7 +753,6 @@ pub(crate) fn rsa_oaep_encrypt<T: openssl::pkey::HasPublic>(
     key_to_wrap: &[u8],
 ) -> Result<Vec<u8>, TpmError> {
     use openssl::encrypt::Encrypter;
-    use openssl::rsa::Padding;
 
     let rsa_pub_key = PKey::from_rsa(key.clone()).map_err(|ossl_err| {
         error!(?ossl_err);
@@ -806,7 +812,6 @@ fn rsa_oaep_decrypt(
     input: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
     use openssl::encrypt::Decrypter;
-    use openssl::rsa::Padding;
 
     let rsa_priv_key = PKey::from_rsa(key.clone()).map_err(|ossl_err| {
         error!(?ossl_err);
