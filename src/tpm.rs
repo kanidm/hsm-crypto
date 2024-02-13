@@ -811,8 +811,29 @@ impl Tpm for TpmTss {
             })
     }
 
-    fn identity_key_id(&mut self, _key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
-        Err(TpmError::TpmOperationUnsupported)
+    fn identity_key_id(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
+        let key_context = match key {
+            IdentityKey::TpmEcdsa256 {
+                key_context,
+                x509: _,
+            } => key_context.clone(),
+            IdentityKey::TpmRsa2048 {
+                key_context,
+                x509: _,
+            } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        self.execute_with_temporary_object_context(key_context, |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .read_public(key_handle.into())
+                .map(|(_, name, _qualified_name)| name.value().to_vec())
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmIdentityKeyId
+                })
+        })
     }
 
     fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {

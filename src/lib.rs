@@ -218,6 +218,7 @@ pub enum TpmError {
     TpmIdentityKeyBuilderInvalid,
     TpmIdentityKeyCreate,
     TpmIdentityKeySign,
+    TpmIdentityKeyId,
     TpmIdentityKeySignatureInvalid,
     TpmIdentityKeyEcdsaSigRInvalid,
     TpmIdentityKeyEcdsaSigSInvalid,
