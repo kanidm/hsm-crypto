@@ -1,15 +1,19 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError,
+    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
+    HMAC_KEY_LEN,
 };
 use zeroize::Zeroizing;
+
+#[cfg(feature = "msextensions")]
+use crate::{LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey, SealedData};
 
 use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::{hash, MessageDigest};
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rand::rand_bytes;
-use openssl::rsa::Rsa;
+use openssl::rsa::{Padding, Rsa};
 use openssl::sign::{Signer, Verifier};
 use openssl::symm::{Cipher, Crypter, Mode};
 use openssl::x509::{X509NameBuilder, X509ReqBuilder, X509};
@@ -31,14 +35,14 @@ impl Tpm for SoftTpm {
         auth_value: &AuthValue,
     ) -> Result<LoadableMachineKey, TpmError> {
         // Create a "machine binding" key.
-        let mut buf = Zeroizing::new([0; 32]);
+        let mut buf = Zeroizing::new([0; AES256GCM_KEY_LEN]);
         rand_bytes(buf.as_mut()).map_err(|ossl_err| {
             error!(?ossl_err);
             TpmError::Entropy
         })?;
 
         // Encrypt it.
-        let mut iv = [0; 16];
+        let mut iv = [0; AES256GCM_IV_LEN];
         rand_bytes(&mut iv).map_err(|ossl_err| {
             error!(?ossl_err);
             TpmError::Entropy
@@ -72,7 +76,7 @@ impl Tpm for SoftTpm {
     }
 
     fn hmac_key_create(&mut self, mk: &MachineKey) -> Result<LoadableHmacKey, TpmError> {
-        let mut buf = Zeroizing::new([0; 32]);
+        let mut buf = Zeroizing::new([0; HMAC_KEY_LEN]);
         rand_bytes(buf.as_mut()).map_err(|ossl_err| {
             error!(?ossl_err);
             TpmError::Entropy
@@ -390,12 +394,19 @@ impl Tpm for SoftTpm {
 
     fn identity_key_sign(&mut self, key: &IdentityKey, input: &[u8]) -> Result<Vec<u8>, TpmError> {
         let mut signer = match key {
-            IdentityKey::SoftEcdsa256 { pkey, x509: _ }
-            | IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
+            IdentityKey::SoftEcdsa256 { pkey, x509: _ } => {
                 Signer::new(MessageDigest::sha256(), pkey).map_err(|ossl_err| {
                     error!(?ossl_err);
                     TpmError::IdentityKeyInvalidForSigning
                 })?
+            }
+            IdentityKey::SoftRsa2048 { pkey, x509: _ } => {
+                Signer::new(MessageDigest::sha256(), pkey)
+                    .and_then(|mut signer| signer.set_rsa_padding(Padding::PKCS1).map(|()| signer))
+                    .map_err(|ossl_err| {
+                        error!(?ossl_err);
+                        TpmError::IdentityKeyInvalidForSigning
+                    })?
             }
             IdentityKey::TpmEcdsa256 { .. } | IdentityKey::TpmRsa2048 { .. } => {
                 return Err(TpmError::IncorrectKeyType)
@@ -551,9 +562,308 @@ impl Tpm for SoftTpm {
 
         Ok(cloned_key)
     }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_create(
+        &mut self,
+        mk: &MachineKey,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
+        let rsa = Rsa::generate(2048).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::RsaGenerate
+        })?;
+
+        self.msoapxbc_rsa_key_import(mk, rsa)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_import(
+        &mut self,
+        mk: &MachineKey,
+        private_key: Rsa<openssl::pkey::Private>,
+    ) -> Result<LoadableMsOapxbcRsaKey, TpmError> {
+        // Create our AES GCM key as well. This lets us encrypt "against" the
+        // RSA key here. For real TPM's we'll be using seal/unseal against the
+        // keyhandle as a parent.
+        let mut buf = Zeroizing::new([0; AES256GCM_KEY_LEN]);
+        rand_bytes(buf.as_mut()).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::Entropy
+        })?;
+
+        let cek = rsa_oaep_encrypt(&private_key, buf.as_ref())?;
+
+        let der = private_key
+            .private_key_to_der()
+            .map(Zeroizing::new)
+            .map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::RsaPrivateToDer
+            })?;
+
+        let mut iv = [0; 16];
+        rand_bytes(&mut iv).map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::Entropy
+        })?;
+
+        let (key, tag) = match mk {
+            MachineKey::SoftAes256Gcm { key } => {
+                aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+            }
+            MachineKey::Tpm { .. } => return Err(TpmError::IncorrectKeyType),
+        };
+
+        Ok(LoadableMsOapxbcRsaKey::Soft2048V1 { key, tag, iv, cek })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_key_load(
+        &mut self,
+        mk: &MachineKey,
+        loadable_key: &LoadableMsOapxbcRsaKey,
+    ) -> Result<MsOapxbcRsaKey, TpmError> {
+        match (mk, loadable_key) {
+            (
+                MachineKey::SoftAes256Gcm { key: mk_key },
+                LoadableMsOapxbcRsaKey::Soft2048V1 { key, tag, iv, cek },
+            ) => {
+                let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
+
+                let key = Rsa::private_key_from_der(key_der.as_ref()).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::RsaKeyFromDer
+                })?;
+
+                let mut cek = rsa_oaep_decrypt(&key, cek)?;
+
+                cek.truncate(AES256GCM_KEY_LEN);
+
+                Ok(MsOapxbcRsaKey::Soft { key, cek })
+            }
+            (_, _) => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_public_as_der(&mut self, key: &MsOapxbcRsaKey) -> Result<Vec<u8>, TpmError> {
+        match key {
+            MsOapxbcRsaKey::Soft { key, cek: _ } => key.public_key_to_der().map_err(|ossl_err| {
+                error!(?ossl_err);
+                TpmError::MsOapxbcKeyPublicToDer
+            }),
+            _ => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        input: &[u8],
+        expected_key_len: usize,
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
+        match key {
+            MsOapxbcRsaKey::Soft { key, cek } => {
+                let mut unwrapped_key = rsa_oaep_decrypt(key, input)?;
+
+                unwrapped_key.truncate(expected_key_len);
+
+                // Bind to the parent.
+                let mut iv = [0; 16];
+                rand_bytes(&mut iv).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::Entropy
+                })?;
+
+                let (enc_session_key, tag) =
+                    aes_256_gcm_encrypt(unwrapped_key.as_ref(), cek.as_ref(), &iv)?;
+
+                // Return it in it's loadable form.
+                Ok(LoadableMsOapxbcSessionKey::SoftV1 {
+                    key: enc_session_key,
+                    tag,
+                    iv,
+                })
+            }
+            _ => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_yield_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        match (key, session_key) {
+            (
+                MsOapxbcRsaKey::Soft { key: _, cek },
+                LoadableMsOapxbcSessionKey::SoftV1 { key, tag, iv },
+            ) => aes_256_gcm_decrypt(key, tag, cek, iv),
+            (_, _) => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_seal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        data: &[u8],
+    ) -> Result<SealedData, TpmError> {
+        match key {
+            MsOapxbcRsaKey::Soft { key: _, cek } => {
+                // Bind to the parent's cek
+                let mut iv = [0; 16];
+                rand_bytes(&mut iv).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::Entropy
+                })?;
+
+                let (enc_data, tag) = aes_256_gcm_encrypt(data, cek.as_ref(), &iv)?;
+
+                Ok(SealedData::SoftV1 {
+                    data: enc_data,
+                    tag,
+                    iv,
+                })
+            }
+            _ => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_unseal_data(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        match (key, sealed_data) {
+            (MsOapxbcRsaKey::Soft { key: _, cek }, SealedData::SoftV1 { data, tag, iv }) => {
+                aes_256_gcm_decrypt(data, tag, cek, iv)
+            }
+            (_, _) => Err(TpmError::IncorrectKeyType),
+        }
+    }
 }
 
-fn aes_256_gcm_encrypt(
+#[cfg(feature = "msextensions")]
+pub(crate) fn rsa_oaep_encrypt<T: openssl::pkey::HasPublic>(
+    key: &Rsa<T>,
+    key_to_wrap: &[u8],
+) -> Result<Vec<u8>, TpmError> {
+    use openssl::encrypt::Encrypter;
+
+    let rsa_pub_key = PKey::from_rsa(key.clone()).map_err(|ossl_err| {
+        error!(?ossl_err);
+        TpmError::MsOapxbcKeyOaepOption
+    })?;
+
+    let mut wrap_key_encrypter = Encrypter::new(&rsa_pub_key).map_err(|ossl_err| {
+        error!(?ossl_err);
+        TpmError::MsOapxbcKeyOaepOption
+    })?;
+
+    wrap_key_encrypter
+        .set_rsa_padding(Padding::PKCS1_OAEP)
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepOption
+        })?;
+
+    wrap_key_encrypter
+        .set_rsa_mgf1_md(MessageDigest::sha1())
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepOption
+        })?;
+
+    wrap_key_encrypter
+        .set_rsa_oaep_md(MessageDigest::sha1())
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepOption
+        })?;
+
+    let buf_len = wrap_key_encrypter
+        .encrypt_len(key_to_wrap)
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepEncipher
+        })?;
+
+    let mut wrapped_key = vec![0; buf_len];
+
+    let encoded_len = wrap_key_encrypter
+        .encrypt(key_to_wrap, wrapped_key.as_mut())
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepEncipher
+        })?;
+
+    wrapped_key.truncate(encoded_len);
+
+    Ok(wrapped_key)
+}
+
+#[cfg(feature = "msextensions")]
+fn rsa_oaep_decrypt(
+    key: &Rsa<openssl::pkey::Private>,
+    input: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+    use openssl::encrypt::Decrypter;
+
+    let rsa_priv_key = PKey::from_rsa(key.clone()).map_err(|ossl_err| {
+        error!(?ossl_err);
+        TpmError::MsOapxbcKeyOaepOption
+    })?;
+
+    let mut wrap_key_decrypter = Decrypter::new(&rsa_priv_key).map_err(|ossl_err| {
+        error!(?ossl_err);
+        TpmError::MsOapxbcKeyOaepOption
+    })?;
+
+    wrap_key_decrypter
+        .set_rsa_padding(Padding::PKCS1_OAEP)
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepOption
+        })?;
+
+    wrap_key_decrypter
+        .set_rsa_mgf1_md(MessageDigest::sha1())
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepOption
+        })?;
+
+    wrap_key_decrypter
+        .set_rsa_oaep_md(MessageDigest::sha1())
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepOption
+        })?;
+
+    // Rsa oaep will often work on bigger block sizes, so we need a larger buffer and then we
+    // can copy later. First we check the expected length of the decryption.
+    let buf_len = wrap_key_decrypter.decrypt_len(input).map_err(|ossl_err| {
+        error!(?ossl_err);
+        TpmError::MsOapxbcKeyOaepDecipher
+    })?;
+
+    let mut unwrapped_key = Zeroizing::new(vec![0; buf_len]);
+
+    wrap_key_decrypter
+        .decrypt(input, unwrapped_key.as_mut())
+        .map_err(|ossl_err| {
+            error!(?ossl_err);
+            TpmError::MsOapxbcKeyOaepDecipher
+        })?;
+
+    Ok(unwrapped_key)
+}
+
+pub(crate) fn aes_256_gcm_encrypt(
     input: &[u8],
     key: &[u8],
     iv: &[u8],
@@ -592,7 +902,7 @@ fn aes_256_gcm_encrypt(
     Ok((ciphertext, tag))
 }
 
-fn aes_256_gcm_decrypt(
+pub(crate) fn aes_256_gcm_decrypt(
     input: &[u8],
     tag: &[u8],
     key: &[u8],
@@ -701,5 +1011,17 @@ mod tests {
         let mut hsm = SoftTpm::new();
 
         crate::test_tpm_identity_csr!(hsm, KeyAlgorithm::Ecdsa256);
+    }
+}
+
+#[cfg(all(test, feature = "msextensions"))]
+mod ms_extn_tests {
+    use crate::soft::SoftTpm;
+
+    #[test]
+    fn soft_ms_extensions() {
+        let mut hsm = SoftTpm::new();
+
+        crate::test_tpm_ms_extensions!(hsm);
     }
 }
