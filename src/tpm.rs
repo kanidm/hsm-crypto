@@ -1,9 +1,7 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
+    LoadableMachineKey, MachineKey, Tpm, TpmError,
 };
-
-use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
 
 use openssl::bn::BigNum;
 use openssl::ecdsa::EcdsaSig;
@@ -16,12 +14,11 @@ use tracing::error;
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::SessionType;
 use tss_esapi::structures::{
-    CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccParameter, EccPoint, EccScheme,
+    CreateKeyResult, CreatePrimaryKeyResult, Digest, EccParameter, EccPoint, EccScheme,
     EccSignature, HashScheme, HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder,
     PublicEccParametersBuilder, PublicKeyRsa, PublicKeyedHashParameters,
-    PublicRsaParametersBuilder, RsaDecryptionScheme, RsaExponent, RsaScheme, RsaSignature,
-    SensitiveData, Signature, SignatureScheme, SymmetricCipherParameters, SymmetricDefinition,
-    SymmetricDefinitionObject,
+    PublicRsaParametersBuilder, RsaExponent, RsaScheme, RsaSignature, Signature, SignatureScheme,
+    SymmetricCipherParameters, SymmetricDefinition, SymmetricDefinitionObject,
 };
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
@@ -43,7 +40,14 @@ pub use tss_esapi::structures::{Auth, Private, Public};
 pub use tss_esapi::utils::TpmsContext;
 
 #[cfg(feature = "msextensions")]
-use crate::{LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey, SealedData};
+use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
+#[cfg(feature = "msextensions")]
+use crate::{
+    LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey, SealedData,
+    AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
+};
+#[cfg(feature = "msextensions")]
+use tss_esapi::structures::{Data, RsaDecryptionScheme, SensitiveData};
 #[cfg(feature = "msextensions")]
 use zeroize::Zeroizing;
 
