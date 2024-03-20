@@ -147,8 +147,12 @@ impl Tpm for SoftTpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&AuthValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
+        if auth_value.is_some() {
+            return Err(TpmError::TpmOperationUnsupported);
+        }
         match algorithm {
             KeyAlgorithm::Ecdsa256 => {
                 let ecgroup =
@@ -224,8 +228,12 @@ impl Tpm for SoftTpm {
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&AuthValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
+        if auth_value.is_some() {
+            return Err(TpmError::TpmOperationUnsupported);
+        }
         match (mk, loadable_key) {
             (
                 MachineKey::SoftAes256Gcm { key: mk_key },
@@ -457,10 +465,11 @@ impl Tpm for SoftTpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&AuthValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError> {
-        let id_key = self.identity_key_load(mk, loadable_key)?;
+        let id_key = self.identity_key_load(mk, auth_value, loadable_key)?;
 
         let mut req_builder = X509ReqBuilder::new().map_err(|ossl_err| {
             error!(?ossl_err);
@@ -516,10 +525,11 @@ impl Tpm for SoftTpm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&AuthValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError> {
-        let id_key = self.identity_key_load(mk, loadable_key)?;
+        let id_key = self.identity_key_load(mk, auth_value, loadable_key)?;
 
         // Verify the certificate matches our key
         let certificate = X509::from_der(certificate_der).map_err(|ossl_err| {
