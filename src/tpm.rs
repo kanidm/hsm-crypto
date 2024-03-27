@@ -23,8 +23,8 @@ use tss_esapi::structures::{
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
 
-use tss_esapi::interface_types::reserved_handles::Hierarchy;
-// use tss_esapi::interface_types::resource_handles::Hierarchy;
+// use tss_esapi::interface_types::reserved_handles::Hierarchy;
+use tss_esapi::interface_types::resource_handles::Hierarchy;
 
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
@@ -38,8 +38,8 @@ use tss_esapi::handles::ObjectHandle;
 
 pub use tss_esapi::handles::KeyHandle;
 pub use tss_esapi::structures::{Auth, Private, Public};
-// pub use tss_esapi::utils::TpmsContext;
-pub use tss_esapi::structures::SavedTpmContext as TpmsContext;
+pub use tss_esapi::utils::TpmsContext;
+// pub use tss_esapi::structures::SavedTpmContext as TpmsContext;
 
 #[cfg(feature = "msextensions")]
 use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
