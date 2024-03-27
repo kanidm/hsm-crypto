@@ -1,6 +1,6 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
+    LoadableMachineKey, MachineKey, PinValue, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
     HMAC_KEY_LEN,
 };
 use zeroize::Zeroizing;
@@ -147,7 +147,7 @@ impl Tpm for SoftTpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
         if auth_value.is_some() {
@@ -228,7 +228,7 @@ impl Tpm for SoftTpm {
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
         if auth_value.is_some() {
@@ -465,7 +465,7 @@ impl Tpm for SoftTpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError> {
@@ -525,7 +525,7 @@ impl Tpm for SoftTpm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError> {

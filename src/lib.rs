@@ -38,6 +38,35 @@ pub mod tpm;
 // future goal ... once I can afford one ...
 // mod yubihsm;
 
+pub(crate) const TPM_PIN_MIN_LEN: u8 = 6;
+// TPM's limit the max pin based on algorithm max bytes per the
+// size of the largest hash. This means pins max out at 32 bytes
+// as that's the size of sha256 output.
+pub(crate) const TPM_PIN_MAX_LEN: u8 = 32;
+
+pub struct PinValue {
+    value: Zeroizing<Vec<u8>>,
+}
+
+pub enum TpmPinError {
+    TooShort(u8),
+    TooLarge(u8),
+}
+
+impl PinValue {
+    pub fn new(input: &str) -> Result<Self, TpmPinError> {
+        if input.len() < TPM_PIN_MIN_LEN as usize {
+            return Err(TpmPinError::TooShort(TPM_PIN_MIN_LEN));
+        } else if input.len() > TPM_PIN_MAX_LEN as usize {
+            return Err(TpmPinError::TooLarge(TPM_PIN_MAX_LEN));
+        }
+
+        Ok(PinValue {
+            value: input.as_bytes().to_vec().into(),
+        })
+    }
+}
+
 pub enum AuthValue {
     Key256Bit {
         auth_key: Zeroizing<[u8; AES256GCM_KEY_LEN]>,
@@ -333,34 +362,34 @@ pub enum LoadableIdentityKey {
     },
     #[cfg(feature = "tpm")]
     TpmEcdsa256V1 {
+        sk_private: tpm::Private,
+        sk_public: tpm::Public,
         private: tpm::Private,
         public: tpm::Public,
-        sk_private: Option<tpm::Private>,
-        sk_public: Option<tpm::Public>,
         x509: Option<Vec<u8>>,
     },
     #[cfg(not(feature = "tpm"))]
     TpmEcdsa256V1 {
+        sk_private: (),
+        sk_public: (),
         private: (),
         public: (),
-        sk_private: Option<()>,
-        sk_public: Option<()>,
         x509: (),
     },
     #[cfg(feature = "tpm")]
     TpmRsa2048V1 {
+        sk_private: tpm::Private,
+        sk_public: tpm::Public,
         private: tpm::Private,
         public: tpm::Public,
-        sk_private: Option<tpm::Private>,
-        sk_public: Option<tpm::Public>,
         x509: Option<Vec<u8>>,
     },
     #[cfg(not(feature = "tpm"))]
     TpmRsa2048V1 {
+        sk_private: (),
+        sk_public: (),
         private: (),
         public: (),
-        sk_private: Option<()>,
-        sk_public: Option<()>,
         x509: (),
     },
 }
@@ -516,14 +545,14 @@ pub trait Tpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError>;
 
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError>;
 
@@ -541,7 +570,7 @@ pub trait Tpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError>;
@@ -549,7 +578,7 @@ pub trait Tpm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError>;
@@ -658,7 +687,7 @@ impl Tpm for BoxedDynTpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
         self.0.identity_key_create(mk, auth_value, algorithm)
@@ -667,7 +696,7 @@ impl Tpm for BoxedDynTpm {
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
         self.0.identity_key_load(mk, auth_value, loadable_key)
@@ -693,7 +722,7 @@ impl Tpm for BoxedDynTpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError> {
@@ -704,7 +733,7 @@ impl Tpm for BoxedDynTpm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&AuthValue>,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError> {
@@ -909,20 +938,17 @@ mod tests {
                 .machine_key_load(&auth_value, &loadable_machine_key)
                 .expect("Unable to load machine key");
 
-            let id_key_auth_str = AuthValue::generate().expect("Failed to create hex pin");
-
-            let id_key_auth_value =
-                AuthValue::from_str(&id_key_auth_str).expect("Unable to create auth value");
+            let id_key_pin_value = None;
 
             // from that ctx, create an identity key
             let loadable_id_key = $tpm
-                .identity_key_create(&machine_key, Some(&id_key_auth_value), $alg)
+                .identity_key_create(&machine_key, id_key_pin_value, $alg)
                 .expect("Unable to create id key");
 
             trace!(?loadable_id_key);
 
             let id_key = $tpm
-                .identity_key_load(&machine_key, Some(&id_key_auth_value), &loadable_id_key)
+                .identity_key_load(&machine_key, id_key_pin_value, &loadable_id_key)
                 .expect("Unable to load id key");
 
             let id_key_public_pem = $tpm
@@ -994,11 +1020,11 @@ mod tests {
                 .machine_key_load(&auth_value, &loadable_machine_key)
                 .expect("Unable to load machine key");
 
-            let id_key_auth_value = AuthValue::ephemeral().expect("Unable to create auth value");
+            let id_key_pin_value = None;
 
             // from that ctx, create an identity key
             let loadable_id_key = $tpm
-                .identity_key_create(&machine_key, Some(&id_key_auth_value), $alg)
+                .identity_key_create(&machine_key, id_key_pin_value, $alg)
                 .expect("Unable to create id key");
 
             trace!(?loadable_id_key);
@@ -1008,7 +1034,7 @@ mod tests {
             let csr_der = $tpm
                 .identity_key_certificate_request(
                     &machine_key,
-                    Some(&id_key_auth_value),
+                    id_key_pin_value,
                     &loadable_id_key,
                     "common name",
                 )
@@ -1028,7 +1054,7 @@ mod tests {
             let loadable_id_key = $tpm
                 .identity_key_associate_certificate(
                     &machine_key,
-                    Some(&id_key_auth_value),
+                    id_key_pin_value,
                     &loadable_id_key,
                     &signed_cert_der,
                 )
@@ -1036,7 +1062,7 @@ mod tests {
 
             // Now load it in:
             let id_key = $tpm
-                .identity_key_load(&machine_key, Some(&id_key_auth_value), &loadable_id_key)
+                .identity_key_load(&machine_key, id_key_pin_value, &loadable_id_key)
                 .expect("Unable to load id key");
 
             let id_key_x509_pem = $tpm
