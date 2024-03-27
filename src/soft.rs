@@ -147,12 +147,9 @@ impl Tpm for SoftTpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&PinValue>,
+        pin_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
-        if auth_value.is_some() {
-            return Err(TpmError::TpmOperationUnsupported);
-        }
         match algorithm {
             KeyAlgorithm::Ecdsa256 => {
                 let ecgroup =
@@ -182,7 +179,15 @@ impl Tpm for SoftTpm {
 
                 let (key, tag) = match mk {
                     MachineKey::SoftAes256Gcm { key } => {
-                        aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        // If we have a PIN we need to mix it with the key here
+                        // to derive a unique enc key.
+                        if let Some(pin_value) = pin_value {
+                            let derived_key = pin_value.derive_aes_256_gcm(key.as_ref())?;
+                            debug_assert!(derived_key.as_ref() != key.as_slice());
+                            aes_256_gcm_encrypt(der.as_ref(), derived_key.as_ref(), &iv)?
+                        } else {
+                            aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        }
                     }
                     MachineKey::Tpm { .. } => return Err(TpmError::IncorrectKeyType),
                 };
@@ -213,7 +218,13 @@ impl Tpm for SoftTpm {
 
                 let (key, tag) = match mk {
                     MachineKey::SoftAes256Gcm { key } => {
-                        aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        if let Some(pin_value) = pin_value {
+                            let derived_key = pin_value.derive_aes_256_gcm(key.as_ref())?;
+                            debug_assert!(derived_key.as_ref() != key.as_slice());
+                            aes_256_gcm_encrypt(der.as_ref(), derived_key.as_ref(), &iv)?
+                        } else {
+                            aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        }
                     }
                     MachineKey::Tpm { .. } => return Err(TpmError::IncorrectKeyType),
                 };
@@ -228,18 +239,20 @@ impl Tpm for SoftTpm {
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
-        auth_value: Option<&PinValue>,
+        pin_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
-        if auth_value.is_some() {
-            return Err(TpmError::TpmOperationUnsupported);
-        }
         match (mk, loadable_key) {
             (
                 MachineKey::SoftAes256Gcm { key: mk_key },
                 LoadableIdentityKey::SoftEcdsa256V1 { key, tag, iv, x509 },
             ) => {
-                let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
+                let key_der = if let Some(pin_value) = pin_value {
+                    let derived_key = pin_value.derive_aes_256_gcm(mk_key.as_ref())?;
+                    aes_256_gcm_decrypt(key, tag, derived_key.as_ref(), iv)?
+                } else {
+                    aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?
+                };
 
                 let eckey = EcKey::private_key_from_der(key_der.as_ref()).map_err(|ossl_err| {
                     error!(?ossl_err);
@@ -278,7 +291,12 @@ impl Tpm for SoftTpm {
                 MachineKey::SoftAes256Gcm { key: mk_key },
                 LoadableIdentityKey::SoftRsa2048V1 { key, tag, iv, x509 },
             ) => {
-                let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
+                let key_der = if let Some(pin_value) = pin_value {
+                    let derived_key = pin_value.derive_aes_256_gcm(mk_key.as_ref())?;
+                    aes_256_gcm_decrypt(key, tag, derived_key.as_ref(), iv)?
+                } else {
+                    aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?
+                };
 
                 let eckey = Rsa::private_key_from_der(key_der.as_ref()).map_err(|ossl_err| {
                     error!(?ossl_err);

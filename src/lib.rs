@@ -66,6 +66,49 @@ impl PinValue {
             value: input.as_bytes().to_vec().into(),
         })
     }
+
+    pub(crate) fn derive_aes_256_gcm(
+        &self,
+        parent_key: &[u8],
+    ) -> Result<Zeroizing<[u8; AES256GCM_KEY_LEN]>, TpmError> {
+        use argon2::{Algorithm, Argon2, Params, Version};
+
+        let mut auth_key = Zeroizing::new([0; AES256GCM_KEY_LEN]);
+
+        // This can't be changed else it will break key derivation for users.
+        let argon2id_params =
+            Params::new(32_768, 1, 1, Some(auth_key.as_ref().len())).map_err(|argon_err| {
+                error!(?argon_err);
+                TpmError::AuthValueDerivation
+            })?;
+
+        // Want at least 8 bytes salt, 16 bytes pw input.
+        if parent_key.len() < 24 {
+            return Err(TpmError::AuthValueTooShort);
+        }
+
+        let (salt, pepper) = parent_key.split_at(MIN_SALT_LEN);
+
+        let argon =
+            Argon2::new_with_secret(pepper, Algorithm::Argon2id, Version::V0x13, argon2id_params)
+                .map_err(|argon_err| {
+                error!(?argon_err);
+                TpmError::AuthValueDerivation
+            })?;
+
+        let now = std::time::SystemTime::now();
+
+        argon
+            .hash_password_into(self.value.as_ref(), salt, auth_key.as_mut())
+            .map_err(|argon_err| {
+                error!(?argon_err);
+                TpmError::AuthValueDerivation
+            })?;
+
+        error!(elapsed = ?now.elapsed());
+
+        Ok(auth_key)
+    }
 }
 
 pub enum AuthValue {
