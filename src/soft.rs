@@ -954,6 +954,7 @@ pub(crate) fn aes_256_gcm_decrypt(
 #[cfg(test)]
 mod tests {
     use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, KeyAlgorithm, SoftTpm};
+    use crate::PinValue;
     use tracing::trace;
 
     #[test]
@@ -1001,19 +1002,43 @@ mod tests {
     }
 
     #[test]
-    fn soft_identity_ecdsa256_hw_bound() {
+    fn soft_identity_ecdsa256() {
         // Create the Hsm.
         let mut hsm = SoftTpm::new();
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
     }
 
     #[test]
-    fn soft_identity_rsa2048_hw_bound() {
+    fn soft_identity_rsa2048() {
         // Create the Hsm.
         let mut hsm = SoftTpm::new();
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
+    }
+
+    #[test]
+    fn soft_identity_ecdsa256_pin() {
+        // Create the Hsm.
+        let mut hsm = SoftTpm::new();
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
+    }
+
+    #[test]
+    fn soft_identity_rsa2048_pin() {
+        // Create the Hsm.
+        let mut hsm = SoftTpm::new();
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
     }
 
     #[test]

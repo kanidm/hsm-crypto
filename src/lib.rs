@@ -48,6 +48,7 @@ pub struct PinValue {
     value: Zeroizing<Vec<u8>>,
 }
 
+#[derive(Debug)]
 pub enum TpmPinError {
     TooShort(u8),
     TooLarge(u8),
@@ -912,7 +913,7 @@ mod tests {
 
     #[macro_export]
     macro_rules! test_tpm_identity {
-        ( $tpm:expr, $alg:expr ) => {
+        ( $tpm:expr, $alg:expr, $pin_value:expr ) => {
             use crate::{AuthValue, Tpm};
             use openssl::hash::MessageDigest;
             use openssl::pkey::PKey;
@@ -938,17 +939,15 @@ mod tests {
                 .machine_key_load(&auth_value, &loadable_machine_key)
                 .expect("Unable to load machine key");
 
-            let id_key_pin_value = None;
-
             // from that ctx, create an identity key
             let loadable_id_key = $tpm
-                .identity_key_create(&machine_key, id_key_pin_value, $alg)
+                .identity_key_create(&machine_key, $pin_value.as_ref(), $alg)
                 .expect("Unable to create id key");
 
             trace!(?loadable_id_key);
 
             let id_key = $tpm
-                .identity_key_load(&machine_key, id_key_pin_value, &loadable_id_key)
+                .identity_key_load(&machine_key, $pin_value.as_ref(), &loadable_id_key)
                 .expect("Unable to load id key");
 
             let id_key_public_pem = $tpm

@@ -23,7 +23,8 @@ use tss_esapi::structures::{
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
 
-use tss_esapi::interface_types::resource_handles::Hierarchy;
+use tss_esapi::interface_types::reserved_handles::Hierarchy;
+// use tss_esapi::interface_types::resource_handles::Hierarchy;
 
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
@@ -37,7 +38,8 @@ use tss_esapi::handles::ObjectHandle;
 
 pub use tss_esapi::handles::KeyHandle;
 pub use tss_esapi::structures::{Auth, Private, Public};
-pub use tss_esapi::utils::TpmsContext;
+// pub use tss_esapi::utils::TpmsContext;
+pub use tss_esapi::structures::SavedTpmContext as TpmsContext;
 
 #[cfg(feature = "msextensions")]
 use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
@@ -69,6 +71,15 @@ pub struct TpmTss {
     _auth_session: AuthSession,
 }
 
+// It is possible in some cases you may get:
+// [  200.968893] tpm tpm0: tpm2_save_context: failed with a TPM error 0x0901
+// [  200.972263] tpm tpm0: A TPM error (459) occurred flushing context
+// [  200.974210] tpm tpm0: tpm2_commit_space: error -14
+//
+// This is a bug in the linux kernel resource manager. It seems not to be an issue
+// for unixd, but it could be an issue with himmelblau with a lot of keys in flight.
+//
+// see also: https://github.com/tpm2-software/tpm2-tools/issues/2279
 impl TpmTss {
     pub fn new(tcti_name: &str) -> Result<Self, TpmError> {
         let tpm_name_config = TctiNameConf::from_str(tcti_name).map_err(|tpm_err| {
@@ -120,6 +131,13 @@ impl TpmTss {
             tpm_ctx,
             _auth_session: auth_session,
         })
+    }
+}
+
+impl Drop for TpmTss {
+    fn drop(&mut self) {
+        // Drop the auth_session if possible.
+        self.tpm_ctx.clear_sessions();
     }
 }
 
@@ -1659,6 +1677,7 @@ impl Tpm for TpmTss {
 mod tests {
     use super::TpmTss;
     use crate::KeyAlgorithm;
+    use crate::PinValue;
 
     #[test]
     fn tpm_hmac_hw_bound() {
@@ -1677,7 +1696,9 @@ mod tests {
     fn tpm_identity_ecdsa256_hw_bound() {
         let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
     }
 
     #[test]
@@ -1685,7 +1706,28 @@ mod tests {
         // Create the Hsm.
         let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
+    }
+
+    #[test]
+    fn tpm_identity_ecdsa256_pin_hw_bound() {
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
+    }
+
+    #[test]
+    fn tpm_identity_rsa2048_pin_hw_bound() {
+        // Create the Hsm.
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
     }
 }
 
