@@ -1,6 +1,6 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
+    LoadableMachineKey, MachineKey, PinValue, Tpm, TpmError, AES256GCM_IV_LEN, AES256GCM_KEY_LEN,
     HMAC_KEY_LEN,
 };
 use zeroize::Zeroizing;
@@ -147,6 +147,7 @@ impl Tpm for SoftTpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
+        pin_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
         match algorithm {
@@ -178,7 +179,15 @@ impl Tpm for SoftTpm {
 
                 let (key, tag) = match mk {
                     MachineKey::SoftAes256Gcm { key } => {
-                        aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        // If we have a PIN we need to mix it with the key here
+                        // to derive a unique enc key.
+                        if let Some(pin_value) = pin_value {
+                            let derived_key = pin_value.derive_aes_256_gcm(key.as_ref())?;
+                            debug_assert!(derived_key.as_ref() != key.as_slice());
+                            aes_256_gcm_encrypt(der.as_ref(), derived_key.as_ref(), &iv)?
+                        } else {
+                            aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        }
                     }
                     MachineKey::Tpm { .. } => return Err(TpmError::IncorrectKeyType),
                 };
@@ -209,7 +218,13 @@ impl Tpm for SoftTpm {
 
                 let (key, tag) = match mk {
                     MachineKey::SoftAes256Gcm { key } => {
-                        aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        if let Some(pin_value) = pin_value {
+                            let derived_key = pin_value.derive_aes_256_gcm(key.as_ref())?;
+                            debug_assert!(derived_key.as_ref() != key.as_slice());
+                            aes_256_gcm_encrypt(der.as_ref(), derived_key.as_ref(), &iv)?
+                        } else {
+                            aes_256_gcm_encrypt(der.as_ref(), key.as_ref(), &iv)?
+                        }
                     }
                     MachineKey::Tpm { .. } => return Err(TpmError::IncorrectKeyType),
                 };
@@ -224,6 +239,7 @@ impl Tpm for SoftTpm {
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
+        pin_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
         match (mk, loadable_key) {
@@ -231,7 +247,12 @@ impl Tpm for SoftTpm {
                 MachineKey::SoftAes256Gcm { key: mk_key },
                 LoadableIdentityKey::SoftEcdsa256V1 { key, tag, iv, x509 },
             ) => {
-                let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
+                let key_der = if let Some(pin_value) = pin_value {
+                    let derived_key = pin_value.derive_aes_256_gcm(mk_key.as_ref())?;
+                    aes_256_gcm_decrypt(key, tag, derived_key.as_ref(), iv)?
+                } else {
+                    aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?
+                };
 
                 let eckey = EcKey::private_key_from_der(key_der.as_ref()).map_err(|ossl_err| {
                     error!(?ossl_err);
@@ -270,7 +291,12 @@ impl Tpm for SoftTpm {
                 MachineKey::SoftAes256Gcm { key: mk_key },
                 LoadableIdentityKey::SoftRsa2048V1 { key, tag, iv, x509 },
             ) => {
-                let key_der = aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?;
+                let key_der = if let Some(pin_value) = pin_value {
+                    let derived_key = pin_value.derive_aes_256_gcm(mk_key.as_ref())?;
+                    aes_256_gcm_decrypt(key, tag, derived_key.as_ref(), iv)?
+                } else {
+                    aes_256_gcm_decrypt(key, tag, mk_key.as_ref(), iv)?
+                };
 
                 let eckey = Rsa::private_key_from_der(key_der.as_ref()).map_err(|ossl_err| {
                     error!(?ossl_err);
@@ -457,10 +483,11 @@ impl Tpm for SoftTpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError> {
-        let id_key = self.identity_key_load(mk, loadable_key)?;
+        let id_key = self.identity_key_load(mk, auth_value, loadable_key)?;
 
         let mut req_builder = X509ReqBuilder::new().map_err(|ossl_err| {
             error!(?ossl_err);
@@ -516,10 +543,11 @@ impl Tpm for SoftTpm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError> {
-        let id_key = self.identity_key_load(mk, loadable_key)?;
+        let id_key = self.identity_key_load(mk, auth_value, loadable_key)?;
 
         // Verify the certificate matches our key
         let certificate = X509::from_der(certificate_der).map_err(|ossl_err| {
@@ -944,6 +972,7 @@ pub(crate) fn aes_256_gcm_decrypt(
 #[cfg(test)]
 mod tests {
     use super::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, KeyAlgorithm, SoftTpm};
+    use crate::PinValue;
     use tracing::trace;
 
     #[test]
@@ -991,19 +1020,43 @@ mod tests {
     }
 
     #[test]
-    fn soft_identity_ecdsa256_hw_bound() {
+    fn soft_identity_ecdsa256() {
         // Create the Hsm.
         let mut hsm = SoftTpm::new();
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
     }
 
     #[test]
-    fn soft_identity_rsa2048_hw_bound() {
+    fn soft_identity_rsa2048() {
         // Create the Hsm.
         let mut hsm = SoftTpm::new();
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
+    }
+
+    #[test]
+    fn soft_identity_ecdsa256_pin() {
+        // Create the Hsm.
+        let mut hsm = SoftTpm::new();
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
+    }
+
+    #[test]
+    fn soft_identity_rsa2048_pin() {
+        // Create the Hsm.
+        let mut hsm = SoftTpm::new();
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
     }
 
     #[test]

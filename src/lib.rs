@@ -38,6 +38,79 @@ pub mod tpm;
 // future goal ... once I can afford one ...
 // mod yubihsm;
 
+pub(crate) const TPM_PIN_MIN_LEN: u8 = 6;
+// TPM's limit the max pin based on algorithm max bytes per the
+// size of the largest hash. This means pins max out at 32 bytes
+// as that's the size of sha256 output.
+pub(crate) const TPM_PIN_MAX_LEN: u8 = 32;
+
+pub struct PinValue {
+    value: Zeroizing<Vec<u8>>,
+}
+
+#[derive(Debug)]
+pub enum TpmPinError {
+    TooShort(u8),
+    TooLarge(u8),
+}
+
+impl PinValue {
+    pub fn new(input: &str) -> Result<Self, TpmPinError> {
+        if input.len() < TPM_PIN_MIN_LEN as usize {
+            return Err(TpmPinError::TooShort(TPM_PIN_MIN_LEN));
+        } else if input.len() > TPM_PIN_MAX_LEN as usize {
+            return Err(TpmPinError::TooLarge(TPM_PIN_MAX_LEN));
+        }
+
+        Ok(PinValue {
+            value: input.as_bytes().to_vec().into(),
+        })
+    }
+
+    pub(crate) fn derive_aes_256_gcm(
+        &self,
+        parent_key: &[u8],
+    ) -> Result<Zeroizing<[u8; AES256GCM_KEY_LEN]>, TpmError> {
+        use argon2::{Algorithm, Argon2, Params, Version};
+
+        let mut auth_key = Zeroizing::new([0; AES256GCM_KEY_LEN]);
+
+        // This can't be changed else it will break key derivation for users.
+        let argon2id_params =
+            Params::new(32_768, 1, 1, Some(auth_key.as_ref().len())).map_err(|argon_err| {
+                error!(?argon_err);
+                TpmError::AuthValueDerivation
+            })?;
+
+        // Want at least 8 bytes salt, 16 bytes pw input.
+        if parent_key.len() < 24 {
+            return Err(TpmError::AuthValueTooShort);
+        }
+
+        let (salt, pepper) = parent_key.split_at(MIN_SALT_LEN);
+
+        let argon =
+            Argon2::new_with_secret(pepper, Algorithm::Argon2id, Version::V0x13, argon2id_params)
+                .map_err(|argon_err| {
+                error!(?argon_err);
+                TpmError::AuthValueDerivation
+            })?;
+
+        // let now = std::time::SystemTime::now();
+
+        argon
+            .hash_password_into(self.value.as_ref(), salt, auth_key.as_mut())
+            .map_err(|argon_err| {
+                error!(?argon_err);
+                TpmError::AuthValueDerivation
+            })?;
+
+        // error!(elapsed = ?now.elapsed());
+
+        Ok(auth_key)
+    }
+}
+
 pub enum AuthValue {
     Key256Bit {
         auth_key: Zeroizing<[u8; AES256GCM_KEY_LEN]>,
@@ -333,20 +406,36 @@ pub enum LoadableIdentityKey {
     },
     #[cfg(feature = "tpm")]
     TpmEcdsa256V1 {
+        sk_private: tpm::Private,
+        sk_public: tpm::Public,
         private: tpm::Private,
         public: tpm::Public,
         x509: Option<Vec<u8>>,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmEcdsa256V1 { private: (), public: (), x509: () },
+    TpmEcdsa256V1 {
+        sk_private: (),
+        sk_public: (),
+        private: (),
+        public: (),
+        x509: (),
+    },
     #[cfg(feature = "tpm")]
     TpmRsa2048V1 {
+        sk_private: tpm::Private,
+        sk_public: tpm::Public,
         private: tpm::Private,
         public: tpm::Public,
         x509: Option<Vec<u8>>,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmRsa2048V1 { private: (), public: (), x509: () },
+    TpmRsa2048V1 {
+        sk_private: (),
+        sk_public: (),
+        private: (),
+        public: (),
+        x509: (),
+    },
 }
 
 pub enum IdentityKey {
@@ -500,12 +589,14 @@ pub trait Tpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError>;
 
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError>;
 
@@ -523,6 +614,7 @@ pub trait Tpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError>;
@@ -530,6 +622,7 @@ pub trait Tpm {
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError>;
@@ -638,17 +731,19 @@ impl Tpm for BoxedDynTpm {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
-        self.0.identity_key_create(mk, algorithm)
+        self.0.identity_key_create(mk, auth_value, algorithm)
     }
 
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
-        self.0.identity_key_load(mk, loadable_key)
+        self.0.identity_key_load(mk, auth_value, loadable_key)
     }
 
     fn identity_key_id(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
@@ -671,21 +766,23 @@ impl Tpm for BoxedDynTpm {
     fn identity_key_certificate_request(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         cn: &str,
     ) -> Result<Vec<u8>, TpmError> {
         self.0
-            .identity_key_certificate_request(mk, loadable_key, cn)
+            .identity_key_certificate_request(mk, auth_value, loadable_key, cn)
     }
 
     fn identity_key_associate_certificate(
         &mut self,
         mk: &MachineKey,
+        auth_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
         certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError> {
         self.0
-            .identity_key_associate_certificate(mk, loadable_key, certificate_der)
+            .identity_key_associate_certificate(mk, auth_value, loadable_key, certificate_der)
     }
 
     fn identity_key_public_as_der(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
@@ -859,7 +956,7 @@ mod tests {
 
     #[macro_export]
     macro_rules! test_tpm_identity {
-        ( $tpm:expr, $alg:expr ) => {
+        ( $tpm:expr, $alg:expr, $pin_value:expr ) => {
             use crate::{AuthValue, Tpm};
             use openssl::hash::MessageDigest;
             use openssl::pkey::PKey;
@@ -887,13 +984,13 @@ mod tests {
 
             // from that ctx, create an identity key
             let loadable_id_key = $tpm
-                .identity_key_create(&machine_key, $alg)
+                .identity_key_create(&machine_key, $pin_value.as_ref(), $alg)
                 .expect("Unable to create id key");
 
             trace!(?loadable_id_key);
 
             let id_key = $tpm
-                .identity_key_load(&machine_key, &loadable_id_key)
+                .identity_key_load(&machine_key, $pin_value.as_ref(), &loadable_id_key)
                 .expect("Unable to load id key");
 
             let id_key_public_pem = $tpm
@@ -965,9 +1062,11 @@ mod tests {
                 .machine_key_load(&auth_value, &loadable_machine_key)
                 .expect("Unable to load machine key");
 
+            let id_key_pin_value = None;
+
             // from that ctx, create an identity key
             let loadable_id_key = $tpm
-                .identity_key_create(&machine_key, $alg)
+                .identity_key_create(&machine_key, id_key_pin_value, $alg)
                 .expect("Unable to create id key");
 
             trace!(?loadable_id_key);
@@ -975,7 +1074,12 @@ mod tests {
             // Get the CSR
 
             let csr_der = $tpm
-                .identity_key_certificate_request(&machine_key, &loadable_id_key, "common name")
+                .identity_key_certificate_request(
+                    &machine_key,
+                    id_key_pin_value,
+                    &loadable_id_key,
+                    "common name",
+                )
                 .expect("Failed to create csr");
 
             // Now, we need to sign this to an x509 cert externally.
@@ -992,6 +1096,7 @@ mod tests {
             let loadable_id_key = $tpm
                 .identity_key_associate_certificate(
                     &machine_key,
+                    id_key_pin_value,
                     &loadable_id_key,
                     &signed_cert_der,
                 )
@@ -999,7 +1104,7 @@ mod tests {
 
             // Now load it in:
             let id_key = $tpm
-                .identity_key_load(&machine_key, &loadable_id_key)
+                .identity_key_load(&machine_key, id_key_pin_value, &loadable_id_key)
                 .expect("Unable to load id key");
 
             let id_key_x509_pem = $tpm

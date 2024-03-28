@@ -1,6 +1,6 @@
 use crate::{
     AuthValue, HmacKey, IdentityKey, KeyAlgorithm, LoadableHmacKey, LoadableIdentityKey,
-    LoadableMachineKey, MachineKey, Tpm, TpmError,
+    LoadableMachineKey, MachineKey, PinValue, Tpm, TpmError,
 };
 
 use openssl::bn::BigNum;
@@ -23,6 +23,7 @@ use tss_esapi::structures::{
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
 
+// use tss_esapi::interface_types::reserved_handles::Hierarchy;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 
 use tss_esapi::constants::tss::TPM2_RH_NULL;
@@ -38,6 +39,7 @@ use tss_esapi::handles::ObjectHandle;
 pub use tss_esapi::handles::KeyHandle;
 pub use tss_esapi::structures::{Auth, Private, Public};
 pub use tss_esapi::utils::TpmsContext;
+// pub use tss_esapi::structures::SavedTpmContext as TpmsContext;
 
 #[cfg(feature = "msextensions")]
 use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
@@ -53,11 +55,31 @@ use zeroize::Zeroizing;
 
 use std::str::FromStr;
 
+impl TryInto<Auth> for &PinValue {
+    type Error = TpmError;
+
+    fn try_into(self) -> Result<Auth, Self::Error> {
+        Auth::from_bytes(self.value.as_slice()).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TpmAuthValueInvalid
+        })
+    }
+}
+
 pub struct TpmTss {
     tpm_ctx: Context,
     _auth_session: AuthSession,
 }
 
+// It is possible in some cases you may get:
+// [  200.968893] tpm tpm0: tpm2_save_context: failed with a TPM error 0x0901
+// [  200.972263] tpm tpm0: A TPM error (459) occurred flushing context
+// [  200.974210] tpm tpm0: tpm2_commit_space: error -14
+//
+// This is a bug in the linux kernel resource manager. It seems not to be an issue
+// for unixd, but it could be an issue with himmelblau with a lot of keys in flight.
+//
+// see also: https://github.com/tpm2-software/tpm2-tools/issues/2279
 impl TpmTss {
     pub fn new(tcti_name: &str) -> Result<Self, TpmError> {
         let tpm_name_config = TctiNameConf::from_str(tcti_name).map_err(|tpm_err| {
@@ -109,6 +131,13 @@ impl TpmTss {
             tpm_ctx,
             _auth_session: auth_session,
         })
+    }
+}
+
+impl Drop for TpmTss {
+    fn drop(&mut self) {
+        // Drop the auth_session if possible.
+        self.tpm_ctx.clear_sessions();
     }
 }
 
@@ -648,12 +677,15 @@ impl Tpm for TpmTss {
     fn identity_key_create(
         &mut self,
         mk: &MachineKey,
+        pin_value: Option<&PinValue>,
         algorithm: KeyAlgorithm,
     ) -> Result<LoadableIdentityKey, TpmError> {
         let mk_key_context = match mk {
             MachineKey::Tpm { key_context } => key_context.clone(),
             _ => return Err(TpmError::IncorrectKeyType),
         };
+
+        let storage_key_pub = Self::create_storage_key_public()?;
 
         let object_attributes = ObjectAttributesBuilder::new()
             .with_fixed_tpm(true)
@@ -718,10 +750,27 @@ impl Tpm for TpmTss {
             }
         };
 
+        // Now the auth_value is optional, so we don't need special pathing for
+        // if it's present or not, since the tpm interfaces expect this to be an
+        // option type anyway. If we set it at create, it's required during load,
+        // if it's not set here, then it's not needed during load.
+        //
+        // Realistically we should just say "it's required".
+        let auth_value = pin_value.map(|pv| pv.try_into()).transpose()?;
+
         self.execute_with_temporary_object_context(mk_key_context, |hsm_ctx, mk_key_handle| {
-            hsm_ctx
+            // Create the storage key - this is what actually has the auth_value
+            // associated to it.
+            let (sk_private, sk_public) = hsm_ctx
                 .tpm_ctx
-                .create(mk_key_handle.into(), key_pub, None, None, None, None)
+                .create(
+                    mk_key_handle.into(),
+                    storage_key_pub,
+                    auth_value.clone(),
+                    None,
+                    None,
+                    None,
+                )
                 .map(
                     |CreateKeyResult {
                          out_private: private,
@@ -729,51 +778,108 @@ impl Tpm for TpmTss {
                          creation_data: _,
                          creation_hash: _,
                          creation_ticket: _,
-                     }| {
-                        match algorithm {
-                            KeyAlgorithm::Ecdsa256 => LoadableIdentityKey::TpmEcdsa256V1 {
-                                private,
-                                public,
-                                x509: None,
-                            },
-                            KeyAlgorithm::Rsa2048 => LoadableIdentityKey::TpmRsa2048V1 {
-                                private,
-                                public,
-                                x509: None,
-                            },
-                        }
-                    },
+                     }| { (private, public) },
                 )
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
-                    TpmError::TpmIdentityKeyCreate
-                })
+                    TpmError::TpmMachineKeyCreate
+                })?;
+
+            // Now do a temporary load for the storage key.
+            let storage_key_handle = hsm_ctx
+                .tpm_ctx
+                .load(mk_key_handle.into(), sk_private.clone(), sk_public.clone())
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMachineKeyLoad
+                })?;
+
+            // Create the ID key private/public.
+            let (private, public) = hsm_ctx.execute_with_temporary_object(
+                storage_key_handle.into(),
+                |hsm_ctx, sk_key_handle| {
+                    if let Some(av) = auth_value {
+                        hsm_ctx
+                            .tpm_ctx
+                            .tr_set_auth(sk_key_handle, av)
+                            .map_err(|tpm_err| {
+                                error!(?tpm_err);
+                                TpmError::TpmMachineKeyLoad
+                            })?;
+                    }
+
+                    hsm_ctx
+                        .tpm_ctx
+                        .create(sk_key_handle.into(), key_pub, None, None, None, None)
+                        .map(
+                            |CreateKeyResult {
+                                 out_private: private,
+                                 out_public: public,
+                                 creation_data: _,
+                                 creation_hash: _,
+                                 creation_ticket: _,
+                             }| { (private, public) },
+                        )
+                        .map_err(|tpm_err| {
+                            error!(?tpm_err);
+                            TpmError::TpmMachineKeyCreate
+                        })
+                },
+            )?;
+
+            // Now assign everything to it's structures.
+
+            Ok(match algorithm {
+                KeyAlgorithm::Ecdsa256 => LoadableIdentityKey::TpmEcdsa256V1 {
+                    private,
+                    public,
+                    sk_private,
+                    sk_public,
+                    x509: None,
+                },
+                KeyAlgorithm::Rsa2048 => LoadableIdentityKey::TpmRsa2048V1 {
+                    private,
+                    public,
+                    sk_private,
+                    sk_public,
+                    x509: None,
+                },
+            })
         })
     }
 
     fn identity_key_load(
         &mut self,
         mk: &MachineKey,
+        pin_value: Option<&PinValue>,
         loadable_key: &LoadableIdentityKey,
     ) -> Result<IdentityKey, TpmError> {
-        let (private, public, algorithm, x509) = match loadable_key {
+        let (private, public, sk_private, sk_public, algorithm, x509) = match loadable_key {
             LoadableIdentityKey::TpmEcdsa256V1 {
                 private,
                 public,
+                sk_private,
+                sk_public,
                 x509,
             } => (
                 private.clone(),
                 public.clone(),
+                sk_private.clone(),
+                sk_public.clone(),
                 KeyAlgorithm::Ecdsa256,
                 x509.as_ref(),
             ),
             LoadableIdentityKey::TpmRsa2048V1 {
                 private,
                 public,
+                sk_private,
+                sk_public,
                 x509,
             } => (
                 private.clone(),
                 public.clone(),
+                sk_private.clone(),
+                sk_public.clone(),
                 KeyAlgorithm::Rsa2048,
                 x509.as_ref(),
             ),
@@ -808,11 +914,63 @@ impl Tpm for TpmTss {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        self.execute_key_load_to_context(mk_key_context, private, public)
-            .map(|key_context| match algorithm {
-                KeyAlgorithm::Ecdsa256 => IdentityKey::TpmEcdsa256 { key_context, x509 },
-                KeyAlgorithm::Rsa2048 => IdentityKey::TpmRsa2048 { key_context, x509 },
-            })
+        let auth_value = pin_value.map(|pv| pv.try_into()).transpose()?;
+
+        // Load the storage key. This is what has the authValue attached, which we
+        // need to supply to use it.
+        let storage_key_handle = self.execute_with_temporary_object_context(
+            mk_key_context,
+            |hsm_ctx, mk_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .load(mk_key_handle.into(), sk_private.clone(), sk_public.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmKeyLoad
+                    })
+            },
+        )?;
+
+        // At the end of this fn, storage_key_handle is unloaded and our identity key
+        // handle is ready to rock.
+        let key_handle = self.execute_with_temporary_object(
+            storage_key_handle.into(),
+            |hsm_ctx, sk_key_handle| {
+                // Authenticate to the storage key if we have an auth_value
+                if let Some(av) = auth_value.clone() {
+                    hsm_ctx
+                        .tpm_ctx
+                        .tr_set_auth(sk_key_handle, av)
+                        .map_err(|tpm_err| {
+                            error!(?tpm_err);
+                            TpmError::TpmKeyLoad
+                        })?;
+                }
+
+                // Load the real key now.
+                hsm_ctx
+                    .tpm_ctx
+                    .load(sk_key_handle.into(), private.clone(), public.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TpmKeyLoad
+                    })
+            },
+        )?;
+
+        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .context_save(key_handle)
+                .map(|key_context| match algorithm {
+                    KeyAlgorithm::Ecdsa256 => IdentityKey::TpmEcdsa256 { key_context, x509 },
+                    KeyAlgorithm::Rsa2048 => IdentityKey::TpmRsa2048 { key_context, x509 },
+                })
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmKeyLoad
+                })
+        })
     }
 
     fn identity_key_id(&mut self, key: &IdentityKey) -> Result<Vec<u8>, TpmError> {
@@ -1020,6 +1178,7 @@ impl Tpm for TpmTss {
     fn identity_key_certificate_request(
         &mut self,
         _mk: &MachineKey,
+        _auth_value: Option<&PinValue>,
         _loadable_key: &LoadableIdentityKey,
         _cn: &str,
     ) -> Result<Vec<u8>, TpmError> {
@@ -1029,6 +1188,7 @@ impl Tpm for TpmTss {
     fn identity_key_associate_certificate(
         &mut self,
         _mk: &MachineKey,
+        _auth_value: Option<&PinValue>,
         _loadable_key: &LoadableIdentityKey,
         _certificate_der: &[u8],
     ) -> Result<LoadableIdentityKey, TpmError> {
@@ -1517,6 +1677,7 @@ impl Tpm for TpmTss {
 mod tests {
     use super::TpmTss;
     use crate::KeyAlgorithm;
+    use crate::PinValue;
 
     #[test]
     fn tpm_hmac_hw_bound() {
@@ -1535,7 +1696,9 @@ mod tests {
     fn tpm_identity_ecdsa256_hw_bound() {
         let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
     }
 
     #[test]
@@ -1543,7 +1706,28 @@ mod tests {
         // Create the Hsm.
         let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
 
-        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048);
+        let pin_value = None;
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
+    }
+
+    #[test]
+    fn tpm_identity_ecdsa256_pin_hw_bound() {
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Ecdsa256, pin_value);
+    }
+
+    #[test]
+    fn tpm_identity_rsa2048_pin_hw_bound() {
+        // Create the Hsm.
+        let mut hsm = TpmTss::new("device:/dev/tpmrm0").expect("Unable to build Tpm Context");
+
+        let pin_value = Some(PinValue::new("12345678").expect("Invalid Pin"));
+
+        crate::test_tpm_identity!(hsm, KeyAlgorithm::Rsa2048, pin_value);
     }
 }
 
