@@ -96,7 +96,7 @@ impl PinValue {
                 TpmError::AuthValueDerivation
             })?;
 
-        let now = std::time::SystemTime::now();
+        // let now = std::time::SystemTime::now();
 
         argon
             .hash_password_into(self.value.as_ref(), salt, auth_key.as_mut())
@@ -105,7 +105,7 @@ impl PinValue {
                 TpmError::AuthValueDerivation
             })?;
 
-        error!(elapsed = ?now.elapsed());
+        // error!(elapsed = ?now.elapsed());
 
         Ok(auth_key)
     }
