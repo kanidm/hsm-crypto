@@ -439,6 +439,10 @@ impl Tpm for SoftTpm {
             }
         };
 
+        // Clippy warns that we should use `inspect` instead of `map` here, but
+        // this causes the build to fail because `inspect` is unstable on
+        // Options. Simply ignore the warning for now.
+        #[allow(clippy::manual_inspect)]
         signer
             .sign_oneshot_to_vec(input)
             .map_err(|ossl_err| {
