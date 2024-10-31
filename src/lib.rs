@@ -667,6 +667,14 @@ pub trait Tpm {
     ) -> Result<LoadableMsOapxbcSessionKey, TpmError>;
 
     #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_tgt_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+        input: &[u8],
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError>;
+
+    #[cfg(feature = "msextensions")]
     fn msoapxbc_rsa_yield_session_key(
         &mut self,
         key: &MsOapxbcRsaKey,
@@ -841,6 +849,17 @@ impl Tpm for BoxedDynTpm {
     ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
         self.0
             .msoapxbc_rsa_decipher_session_key(key, input, expected_key_len)
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_tgt_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+        input: &[u8],
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
+        self.0
+            .msoapxbc_rsa_decipher_tgt_session_key(key, session_key, input)
     }
 
     #[cfg(feature = "msextensions")]

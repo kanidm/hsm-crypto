@@ -719,6 +719,46 @@ impl Tpm for SoftTpm {
     }
 
     #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_tgt_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+        input: &[u8],
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
+        match (key, session_key) {
+            (
+                MsOapxbcRsaKey::Soft { key: _, cek },
+                LoadableMsOapxbcSessionKey::SoftV1 { key, tag, iv },
+            ) => {
+                let uwk = aes_256_gcm_decrypt(key, tag, cek, iv)?;
+                let session_key = Rsa::private_key_from_der(&uwk).map_err(|e| {
+                    error!(?e);
+                    TpmError::RsaKeyFromDer
+                })?;
+                let tgt_session_key = rsa_oaep_decrypt(&session_key, input)?;
+
+                // Bind to the parent.
+                let mut iv = [0; 16];
+                rand_bytes(&mut iv).map_err(|ossl_err| {
+                    error!(?ossl_err);
+                    TpmError::Entropy
+                })?;
+
+                let (enc_session_key, tag) =
+                    aes_256_gcm_encrypt(tgt_session_key.as_ref(), cek.as_ref(), &iv)?;
+
+                // Return it in it's loadable form.
+                Ok(LoadableMsOapxbcSessionKey::SoftV1 {
+                    key: enc_session_key,
+                    tag,
+                    iv,
+                })
+            }
+            (_, _) => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    #[cfg(feature = "msextensions")]
     fn msoapxbc_rsa_yield_session_key(
         &mut self,
         key: &MsOapxbcRsaKey,
@@ -835,7 +875,7 @@ pub(crate) fn rsa_oaep_encrypt<T: openssl::pkey::HasPublic>(
 }
 
 #[cfg(feature = "msextensions")]
-fn rsa_oaep_decrypt(
+pub(crate) fn rsa_oaep_decrypt(
     key: &Rsa<openssl::pkey::Private>,
     input: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, TpmError> {

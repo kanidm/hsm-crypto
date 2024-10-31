@@ -6,6 +6,7 @@ use crate::{
 use openssl::bn::BigNum;
 use openssl::ecdsa::EcdsaSig;
 use openssl::hash::{hash, MessageDigest};
+use openssl::rsa::Rsa;
 use openssl::x509::X509;
 
 // use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ pub use tss_esapi::utils::TpmsContext;
 // pub use tss_esapi::structures::SavedTpmContext as TpmsContext;
 
 #[cfg(feature = "msextensions")]
-use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt};
+use crate::soft::{aes_256_gcm_decrypt, aes_256_gcm_encrypt, rsa_oaep_decrypt};
 #[cfg(feature = "msextensions")]
 use crate::{
     LoadableMsOapxbcRsaKey, LoadableMsOapxbcSessionKey, MsOapxbcRsaKey, SealedData,
@@ -1466,6 +1467,86 @@ impl Tpm for TpmTss {
                     key_pub,
                     None,
                     Some(session_key),
+                    None,
+                    None,
+                )
+                .map(
+                    |CreateKeyResult {
+                         out_private: private,
+                         out_public: public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| {
+                        LoadableMsOapxbcSessionKey::TpmV1 { private, public }
+                    },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TpmMsRsaSeal
+                })
+        })
+    }
+
+    #[cfg(feature = "msextensions")]
+    fn msoapxbc_rsa_decipher_tgt_session_key(
+        &mut self,
+        key: &MsOapxbcRsaKey,
+        session_key: &LoadableMsOapxbcSessionKey,
+        input: &[u8],
+    ) -> Result<LoadableMsOapxbcSessionKey, TpmError> {
+        let cek_context = match key {
+            MsOapxbcRsaKey::Tpm {
+                key_context: _,
+                cek_context,
+            } => cek_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let uwk = self.msoapxbc_rsa_yield_session_key(key, session_key)?;
+        let session_key = Rsa::private_key_from_der(&uwk).map_err(|e| {
+            error!(?e);
+            TpmError::RsaKeyFromDer
+        })?;
+        let decrypted_tgt_session_key = rsa_oaep_decrypt(&session_key, input)?;
+
+        let tgt_session_key = SensitiveData::try_from(decrypted_tgt_session_key.to_vec())
+            .map_err(|_| TpmError::TpmMsRsaOaepInvalidKeyLength)?;
+
+        // Seal it.
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_user_with_auth(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::KeyedHash)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(KeyedHashScheme::Null))
+            .with_keyed_hash_unique_identifier(Digest::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TpmMsRsaKeyObjectAttributesInvalid
+            })?;
+
+        // NOTE: We use the cek_context here to seal the data against since the RSA key
+        // can not act as a storage key.
+        self.execute_with_temporary_object_context(cek_context, |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .create(
+                    key_handle.into(),
+                    key_pub,
+                    None,
+                    Some(tgt_session_key),
                     None,
                     None,
                 )
