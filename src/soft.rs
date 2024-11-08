@@ -445,11 +445,9 @@ impl Tpm for SoftTpm {
                 error!(?ossl_err);
                 TpmError::IdentityKeySignature
             })
-            .map(|sig| {
-                let res = openssl::ecdsa::EcdsaSig::from_der(&sig);
+            .inspect(|sig| {
+                let res = openssl::ecdsa::EcdsaSig::from_der(sig);
                 tracing::debug!(res = %res.is_ok());
-
-                sig
             })
     }
 
