@@ -14,7 +14,6 @@ rust-version = "1.79"
 tpm = ["dep:tss-esapi", "dep:tss-esapi-sys"]
 
 [dependencies]
-openssl = "^0.10.57"
 serde = { version = "^1.0", features = ["derive"] }
 tracing = "^0.1.37"
 tss-esapi-sys = { version = "0.5.0", optional = true, features = [
