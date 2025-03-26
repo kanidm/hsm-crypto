@@ -16,8 +16,12 @@ use crypto_glue::traits::*;
 use crypto_glue::x509::BitString;
 
 mod soft;
+mod tss;
 
 pub use self::soft::SoftTpm;
+
+#[cfg(feature = "tpm")]
+pub use self::tss::TssTpm;
 
 pub trait Tpm {
     fn root_storage_key_create(

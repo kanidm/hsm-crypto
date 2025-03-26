@@ -8,6 +8,9 @@ use crypto_glue::{
 };
 use serde::{Deserialize, Serialize};
 
+use tss_esapi::structures as tpm;
+use tss_esapi::utils::TpmsContext;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableStorageKey {
     SoftAes256GcmV1 {
@@ -20,12 +23,37 @@ pub enum LoadableStorageKey {
         tag: Aes256GcmTag,
         nonce: Aes256GcmNonce,
     },
+    #[cfg(feature = "tpm")]
+    TpmAes128CfbV1 {
+        // These are needed to allow direct and indirect storage keys.
+        private: Option<tpm::Private>,
+        public: Option<tpm::Public>,
+        sk_private: tpm::Private,
+        sk_public: tpm::Public,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmAes128CfbV1 {
+        private: (),
+        public: (),
+        sk_private: (),
+        sk_public: (),
+    },
 }
 
 pub type LoadableMachineKey = LoadableStorageKey;
 
 pub enum StorageKey {
-    SoftAes256GcmV2 { key: Aes256Key },
+    SoftAes256GcmV2 {
+        key: Aes256Key,
+    },
+    #[cfg(feature = "tpm")]
+    Tpm {
+        key_context: TpmsContext,
+    },
+    #[cfg(not(feature = "tpm"))]
+    Tpm {
+        key_context: (),
+    },
 }
 
 pub enum LoadableHmacS256Key {

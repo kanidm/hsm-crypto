@@ -35,6 +35,10 @@ impl PinValue {
         })
     }
 
+    pub(crate) fn value(&self) -> &[u8] {
+        self.value.as_slice()
+    }
+
     /// Derive an AES256GCM Key from this PIN. This is used by the soft-tpm exclusively.
     pub(crate) fn derive_aes_256(&self, parent_key: &Aes256Key) -> Result<Aes256Key, TpmError> {
         use argon2::{Algorithm, Argon2, Params, Version};
