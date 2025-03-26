@@ -18,11 +18,11 @@
 #![deny(clippy::manual_let_else)]
 #![allow(clippy::unreachable)]
 
-mod authvalue;
-mod error;
-mod pin;
+pub mod authvalue;
+pub mod error;
+pub mod pin;
 pub mod provider;
-mod structures;
+pub mod structures;
 
 #[cfg(test)]
 mod tests;

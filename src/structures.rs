@@ -22,6 +22,8 @@ pub enum LoadableStorageKey {
     },
 }
 
+pub type LoadableMachineKey = LoadableStorageKey;
+
 pub enum StorageKey {
     SoftAes256GcmV2 { key: Aes256Key },
 }
@@ -39,6 +41,8 @@ pub enum LoadableHmacS256Key {
         nonce: Aes256GcmNonce,
     },
 }
+
+pub type LoadableHmacKey = LoadableHmacS256Key;
 
 pub enum HmacS256Key {
     SoftAes256GcmV2 { key: HmacSha256Key },
@@ -74,6 +78,8 @@ pub enum LoadableRS256Key {
     },
 }
 
+pub type LoadableMsOapxbcRsaKey = LoadableRS256Key;
+
 pub enum RS256Key {
     SoftAes256GcmV2 {
         key: RS256PrivateKey,
@@ -95,3 +101,5 @@ pub enum SealedData {
         nonce: Aes256GcmNonce,
     },
 }
+
+pub type LoadableMsOapxbcSessionKey = SealedData;
