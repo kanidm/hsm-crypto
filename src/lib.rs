@@ -20,7 +20,6 @@
 
 mod authvalue;
 mod error;
-mod legacy;
 mod pin;
 pub mod provider;
 mod structures;

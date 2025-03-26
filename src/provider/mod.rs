@@ -1,6 +1,7 @@
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
+use crate::structures::SealedData;
 use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
 use crate::structures::{LoadableRS256Key, RS256Key};
@@ -199,6 +200,12 @@ pub trait TpmRS256 {
     fn rs256_sign(&mut self, rs256_key: &RS256Key, data: &[u8])
         -> Result<RS256Signature, TpmError>;
 
+    fn rs256_unseal_data(
+        &mut self,
+        key: &RS256Key,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+
     // oaep enc/dec
     fn rs256_oaep_enc(&mut self, rs256_key: &RS256Key, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
@@ -271,6 +278,10 @@ pub trait TpmRS256 {
 }
 
 pub trait TpmMsExtensions: TpmRS256 {
-    // decipher session key
-    // yield the session key
+    fn msoapxbc_rsa_decipher_session_key(
+        &mut self,
+        key: &RS256Key,
+        input: &[u8],
+        expected_key_len: usize,
+    ) -> Result<SealedData, TpmError>;
 }
