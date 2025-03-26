@@ -13,18 +13,19 @@ rust-version = "1.79"
 # default = ["tpm"]
 tpm = ["dep:tss-esapi", "dep:tss-esapi-sys"]
 
+[patch.crates-io]
+# tss-esapi-sys = { path = "../rust-tss-esapi/tss-esapi-sys", optional = true, features = ["generate-bindings"] }
+# tss-esapi = { path = "../rust-tss-esapi/tss-esapi", optional = true }
+# crypto-glue = { path = "../crypto-glue" }
+
 [dependencies]
+crypto-glue = "^0.1.1"
 serde = { version = "^1.0", features = ["derive"] }
 tracing = "^0.1.37"
 tss-esapi-sys = { version = "0.5.0", optional = true, features = [
     "generate-bindings",
 ] }
 tss-esapi = { version = "=8.0.0-alpha", optional = true }
-
-# tss-esapi-sys = { path = "../rust-tss-esapi/tss-esapi-sys", optional = true, features = ["generate-bindings"] }
-# tss-esapi = { path = "../rust-tss-esapi/tss-esapi", optional = true }
-
-crypto-glue = { path = "../crypto-glue" }
 
 [dev-dependencies]
 tracing-subscriber = "^0.3.17"
