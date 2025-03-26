@@ -5,9 +5,7 @@ use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
 use crate::structures::{LoadableRS256Key, RS256Key};
 use crate::structures::{LoadableStorageKey, StorageKey};
-use crypto_glue::ecdsa_p256::{
-    self, EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey,
-};
+use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
 use crypto_glue::hmac_s256::HmacSha256Output;
 use crypto_glue::rand;
 use crypto_glue::rsa::{self, RS256PublicKey, RS256Signature, RS256VerifyingKey};

@@ -1,18 +1,10 @@
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
-use crate::provider::SoftTpm;
 use crate::provider::Tpm;
-use crate::structures::{HmacS256Key, LoadableHmacS256Key, RS256Key, StorageKey};
-use crypto_glue::aes256::{self, Aes256Key};
-use crypto_glue::aes256gcm::{AeadInPlace, Aes256GcmN16, Aes256GcmNonce16, Aes256GcmTag, KeyInit};
-use crypto_glue::hmac_s256;
-use crypto_glue::rsa::{self, RS256PrivateKey};
-use crypto_glue::s256;
-use crypto_glue::sha1;
-use crypto_glue::traits::Pkcs1DecodeRsaPrivateKey;
+use crate::structures::{HmacS256Key, RS256Key, StorageKey};
+use crypto_glue::aes256gcm::{Aes256GcmNonce, Aes256GcmTag};
 use crypto_glue::zeroize::Zeroizing;
 use serde::{Deserialize, Serialize};
-use tracing::error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableMachineKey {
@@ -82,13 +74,18 @@ pub enum LoadableMsOapxbcSessionKey {
 pub enum SealedData {
     // currently needs the parent to have a cek
     SoftV1 {
-        data: Vec<u8>,
+        data: Zeroizing<Vec<u8>>,
         tag: [u8; 16],
         iv: [u8; 16],
     },
+    SoftAes256GcmV2 {
+        data: Zeroizing<Vec<u8>>,
+        tag: Aes256GcmTag,
+        nonce: Aes256GcmNonce,
+    },
 }
 
-trait LegacyTpm: Tpm {
+pub trait LegacyTpm: Tpm {
     fn machine_key_load(
         &mut self,
         auth_value: &AuthValue,
@@ -121,155 +118,6 @@ trait LegacyTpm: Tpm {
     ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
 }
 
-macro_rules! unwrap_aes256gcm_nonce16 {
-    (
-        $wrapping_key: expr,
-        $key_to_unwrap: expr,
-        $tag: expr,
-        $nonce: expr
-    ) => {{
-        let cipher = Aes256GcmN16::new($wrapping_key);
-
-        let mut key = $key_to_unwrap.clone();
-
-        let iv = Aes256GcmNonce16::from_slice($nonce);
-        let tag = Aes256GcmTag::from_slice($tag);
-
-        let associated_data = b"";
-
-        cipher
-            .decrypt_in_place_detached(iv, associated_data, key.as_mut_slice(), tag)
-            .map_err(|_| TpmError::Aes256GcmDecrypt)?;
-
-        if key.as_slice() == $key_to_unwrap.as_slice() {
-            // Encryption didn't replace the buffer in place, fail.
-            return Err(TpmError::Aes256GcmDecrypt);
-        }
-
-        Ok(key)
-    }};
-}
-
-impl LegacyTpm for SoftTpm {
-    fn machine_key_load(
-        &mut self,
-        auth_value: &AuthValue,
-        exported_key: &LoadableMachineKey,
-    ) -> Result<StorageKey, TpmError> {
-        match (auth_value, exported_key) {
-            (
-                AuthValue::Key256Bit { auth_key },
-                LoadableMachineKey::SoftAes256GcmV1 {
-                    key: key_to_unwrap,
-                    tag,
-                    iv,
-                },
-            ) => {
-                let key = aes256::key_from_vec(key_to_unwrap.clone())
-                    .ok_or(TpmError::Aes256KeyInvalid)?;
-
-                unwrap_aes256gcm_nonce16!(auth_key, key, tag, iv)
-                    .map(|key| StorageKey::SoftAes256GcmV2 { key })
-            }
-        }
-    }
-
-    fn hmac_key_load(
-        &mut self,
-        parent_key: &StorageKey,
-        hmac_key: &LoadableHmacKey,
-    ) -> Result<HmacS256Key, TpmError> {
-        match (parent_key, hmac_key) {
-            (
-                StorageKey::SoftAes256GcmV2 { key: parent_key },
-                LoadableHmacKey::SoftSha256V1 {
-                    key: key_to_unwrap,
-                    tag,
-                    iv,
-                },
-            ) => {
-                tracing::trace!(key_size = %hmac_s256::key_size());
-                tracing::trace!(new_key_size = %key_to_unwrap.len());
-
-                let key = unwrap_aes256gcm_nonce16!(parent_key, key_to_unwrap, tag, iv)?;
-
-                let mut empty_key: [u8; 64] = [0; 64];
-
-                empty_key
-                    .get_mut(..32)
-                    .map(|view| view.copy_from_slice(&key));
-
-                let empty_key = hmac_s256::key_from_bytes(empty_key);
-
-                Ok(HmacS256Key::SoftAes256GcmV2 { key: empty_key })
-            }
-        }
-    }
-
-    fn msoapxbc_rsa_key_load(
-        &mut self,
-        parent_key: &StorageKey,
-        rs256_key: &LoadableMsOapxbcRsaKey,
-    ) -> Result<RS256Key, TpmError> {
-        match (parent_key, rs256_key) {
-            (
-                StorageKey::SoftAes256GcmV2 { key: parent_key },
-                LoadableMsOapxbcRsaKey::Soft2048V1 {
-                    key: key_to_unwrap,
-                    tag,
-                    iv,
-                    cek,
-                },
-            ) => {
-                let key = unwrap_aes256gcm_nonce16!(parent_key, key_to_unwrap, tag, iv).and_then(
-                    |pkcs1_bytes| {
-                        RS256PrivateKey::from_pkcs1_der(&pkcs1_bytes).map_err(|err| {
-                            error!(?err, "rsa private from der");
-                            TpmError::RsaPrivateFromDer
-                        })
-                    },
-                )?;
-
-                let padding = rsa::Oaep::new::<sha1::Sha1>();
-                let cek_vec = key
-                    .decrypt(padding, &cek)
-                    .map_err(|_| TpmError::RsaOaepDecrypt)?;
-
-                let mut content_encryption_key = Aes256Key::default();
-                let mut_ref = content_encryption_key.as_mut_slice();
-
-                if cek_vec.len() != mut_ref.len() {
-                    return Err(TpmError::Aes256KeyInvalid);
-                }
-
-                mut_ref.copy_from_slice(cek_vec.as_slice());
-
-                Ok(RS256Key::SoftAes256GcmV2 {
-                    key,
-                    content_encryption_key,
-                })
-            }
-        }
-    }
-
-    fn msoapxbc_rsa_decipher_session_key(
-        &mut self,
-        key: &RS256Key,
-        input: &[u8],
-        expected_key_len: usize,
-    ) -> Result<SealedData, TpmError> {
-        todo!();
-    }
-
-    fn msoapxbc_rsa_yield_session_key(
-        &mut self,
-        key: &RS256Key,
-        sealed_data: &SealedData,
-    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
-        todo!();
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::authvalue::AuthValue;
@@ -277,9 +125,7 @@ mod test {
     use crate::legacy::LoadableMsOapxbcRsaKey;
     use crate::legacy::{LoadableHmacKey, LoadableMachineKey, SealedData};
     use crate::provider::{SoftTpm, TpmHmacS256, TpmRS256};
-
-    use crypto_glue::aes256::{self, Aes256Key};
-    use crypto_glue::aes256gcm::Aes256Gcm;
+    use crypto_glue::traits::Zeroizing;
 
     #[test]
     fn test_legacy_hmac_load() {
@@ -510,7 +356,7 @@ mod test {
         let secret = [0, 1, 2, 3];
 
         let loadable_session_key = SealedData::SoftV1 {
-            data: [87, 226, 232, 212].into(),
+            data: Zeroizing::new([87, 226, 232, 212].into()),
             tag: [
                 252, 18, 22, 251, 45, 71, 194, 127, 176, 97, 65, 223, 10, 37, 245, 17,
             ],
@@ -535,14 +381,20 @@ mod test {
 
         assert_eq!(ms_oapxbc_public_der, public_der);
 
+        let yielded_secret_a = soft_tpm
+            .msoapxbc_rsa_yield_session_key(&ms_oapxbc_key, &loadable_session_key)
+            .unwrap();
+
+        assert_eq!(&secret, yielded_secret_a.as_slice());
+
         let loadable_session_key = soft_tpm
             .msoapxbc_rsa_decipher_session_key(&ms_oapxbc_key, &enc_secret, secret.len())
             .unwrap();
 
-        let yielded_secret = soft_tpm
+        let yielded_secret_b = soft_tpm
             .msoapxbc_rsa_yield_session_key(&ms_oapxbc_key, &loadable_session_key)
             .unwrap();
 
-        assert_eq!(&secret, yielded_secret.as_slice());
+        assert_eq!(&secret, yielded_secret_b.as_slice());
     }
 }

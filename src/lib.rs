@@ -22,7 +22,7 @@ mod authvalue;
 mod error;
 mod legacy;
 mod pin;
-mod provider;
+pub mod provider;
 mod structures;
 
 #[cfg(test)]
