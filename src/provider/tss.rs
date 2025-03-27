@@ -3,7 +3,6 @@ use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
 use tss_esapi::constants::SessionType;
-use tss_esapi::handles::KeyHandle;
 use tss_esapi::handles::ObjectHandle;
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 use tss_esapi::interface_types::ecc::EccCurve;
@@ -12,12 +11,11 @@ use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::interface_types::session_handles::AuthSession;
 use tss_esapi::structures::{Auth, Private, Public};
 use tss_esapi::structures::{
-    CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccParameter, EccPoint, EccScheme,
-    EccSignature, HashScheme, HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder,
-    PublicEccParametersBuilder, PublicKeyRsa, PublicKeyedHashParameters,
-    PublicRsaParametersBuilder, RsaDecryptionScheme, RsaExponent, RsaScheme, RsaSignature,
-    SensitiveData, Signature, SignatureScheme, SymmetricCipherParameters, SymmetricDefinition,
-    SymmetricDefinitionObject,
+    CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccPoint, EccScheme, HashScheme,
+    HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder, PublicEccParametersBuilder,
+    PublicKeyRsa, PublicKeyedHashParameters, PublicRsaParametersBuilder, RsaDecryptionScheme,
+    RsaExponent, RsaScheme, SensitiveData, Signature, SignatureScheme, SymmetricCipherParameters,
+    SymmetricDefinition, SymmetricDefinitionObject,
 };
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
 use tss_esapi::utils::TpmsContext;
@@ -41,13 +39,13 @@ use crypto_glue::{
         EcdsaP256PublicCoordinate, EcdsaP256PublicEncodedPoint, EcdsaP256PublicKey,
         EcdsaP256Signature,
     },
-    hmac_s256::{self, HmacSha256Output},
+    hmac_s256::HmacSha256Output,
     rsa::{self, RS256PublicKey, RS256Signature},
     s256::{Sha256, Sha256Output},
     traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
 };
 
-use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
+use crate::wrap::{unwrap_aes256gcm, wrap_aes256gcm};
 
 pub struct TssTpm {
     tpm_ctx: Context,
@@ -310,8 +308,8 @@ impl Tpm for TssTpm {
         self.execute_with_temporary_object(
             primary.key_handle.into(),
             |hsm_ctx, primary_key_handle| {
-                let (private, public) = hsm_ctx
-                    .create_storage_key(Some(tpm_auth_value.clone()), primary_key_handle.into())?;
+                let (private, public) =
+                    hsm_ctx.create_storage_key(Some(tpm_auth_value.clone()), primary_key_handle)?;
 
                 // Now do a temporary load and create for the storage key.
                 let key_handle = hsm_ctx
@@ -319,7 +317,6 @@ impl Tpm for TssTpm {
                     .load(primary_key_handle.into(), private.clone(), public.clone())
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
-                        assert!(false);
                         TpmError::TssStorageKeyLoad
                     })?;
 
@@ -332,11 +329,10 @@ impl Tpm for TssTpm {
                             .tr_set_auth(parent_key_handle, tpm_auth_value)
                             .map_err(|tpm_err| {
                                 error!(?tpm_err);
-                                assert!(false);
                                 TpmError::TssStorageKeyLoad
                             })?;
 
-                        hsm_ctx.create_storage_key(None, parent_key_handle.into())
+                        hsm_ctx.create_storage_key(None, parent_key_handle)
                     },
                 )?;
 
@@ -385,7 +381,6 @@ impl Tpm for TssTpm {
                             .load(primary_key_handle.into(), private.clone(), public.clone())
                             .map_err(|tpm_err| {
                                 error!(?tpm_err);
-                                assert!(false);
                                 TpmError::TssStorageKeyLoad
                             })
                     },
@@ -401,7 +396,6 @@ impl Tpm for TssTpm {
                             .tr_set_auth(root_key_handle, auth_value.clone())
                             .map_err(|tpm_err| {
                                 error!(?tpm_err);
-                                assert!(false);
                                 TpmError::TssStorageKeyLoad
                             })?;
 
@@ -414,7 +408,6 @@ impl Tpm for TssTpm {
                             )
                             .map_err(|tpm_err| {
                                 error!(?tpm_err);
-                                assert!(false);
                                 TpmError::TssStorageKeyLoad
                             })
                     },
@@ -635,7 +628,75 @@ impl Tpm for TssTpm {
         key: &StorageKey,
         data_to_seal: Zeroizing<Vec<u8>>,
     ) -> Result<SealedData, TpmError> {
-        todo!()
+        let storage_key_context = match key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let content_encryption_key = aes256::new_key();
+
+        let (data, tag, nonce) = wrap_aes256gcm!(&content_encryption_key, data_to_seal)?;
+
+        let unsealed_key = SensitiveData::from_bytes(content_encryption_key.as_slice())
+            .map_err(|_| TpmError::TssSealDataTooLarge)?;
+
+        // Seal it.
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_user_with_auth(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::KeyedHash)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(KeyedHashScheme::Null))
+            .with_keyed_hash_unique_identifier(Digest::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyBuilderInvalid
+            })?;
+
+        self.execute_with_temporary_object_context(storage_key_context, |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .create(
+                    key_handle.into(),
+                    key_pub,
+                    None,
+                    Some(unsealed_key),
+                    None,
+                    None,
+                )
+                .map(
+                    |CreateKeyResult {
+                         out_private: private,
+                         out_public: public,
+                         creation_data: _,
+                         creation_hash: _,
+                         creation_ticket: _,
+                     }| {
+                        SealedData::TpmAes256GcmV2 {
+                            private,
+                            public,
+                            data,
+                            tag,
+                            nonce,
+                        }
+                    },
+                )
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TssSeal
+                })
+        })
     }
 
     fn unseal_data(
@@ -643,7 +704,48 @@ impl Tpm for TssTpm {
         key: &StorageKey,
         data_to_unseal: &SealedData,
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
-        todo!()
+        let storage_key_context = match key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let SealedData::TpmAes256GcmV2 {
+            private,
+            public,
+            data,
+            tag,
+            nonce,
+        } = data_to_unseal
+        else {
+            return Err(TpmError::IncorrectKeyType);
+        };
+
+        let unsealed_key = self.execute_with_temporary_object_context(
+            storage_key_context,
+            |hsm_ctx, key_handle| {
+                let sealed_object = hsm_ctx
+                    .tpm_ctx
+                    .load(key_handle.into(), private.clone(), public.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssSealingKeyLoad
+                    })?;
+
+                hsm_ctx
+                    .tpm_ctx
+                    .unseal(sealed_object.into())
+                    .map(|data| Vec::from(data.as_slice()))
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssUnseal
+                    })
+            },
+        )?;
+
+        let content_encryption_key =
+            aes256::key_from_vec(unsealed_key).ok_or(TpmError::Aes256KeyInvalid)?;
+
+        unwrap_aes256gcm!(&content_encryption_key, data, tag, nonce)
     }
 }
 
@@ -1195,10 +1297,10 @@ impl TpmRS256 for TssTpm {
 
     fn rs256_unseal_data(
         &mut self,
-        key: &RS256Key,
-        sealed_data: &SealedData,
+        _key: &RS256Key,
+        _sealed_data: &SealedData,
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
-        todo!();
+        Err(TpmError::TssRs256UnsealNotSupported)
     }
 }
 

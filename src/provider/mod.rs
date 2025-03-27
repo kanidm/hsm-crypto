@@ -17,10 +17,10 @@ use crypto_glue::traits::*;
 use crypto_glue::x509::BitString;
 
 mod soft;
-mod tss;
-
 pub use self::soft::SoftTpm;
 
+#[cfg(feature = "tpm")]
+mod tss;
 #[cfg(feature = "tpm")]
 pub use self::tss::TssTpm;
 

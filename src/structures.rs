@@ -8,7 +8,10 @@ use crypto_glue::{
 };
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tpm")]
 use tss_esapi::structures as tpm;
+
+#[cfg(feature = "tpm")]
 use tss_esapi::utils::TpmsContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

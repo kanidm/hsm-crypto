@@ -291,9 +291,9 @@ impl TpmHmacS256 for SoftTpm {
 
                 let mut empty_key: [u8; 64] = [0; 64];
 
-                empty_key
-                    .get_mut(..32)
-                    .map(|view| view.copy_from_slice(&key));
+                if let Some(view) = empty_key.get_mut(..32) {
+                    view.copy_from_slice(&key)
+                }
 
                 let empty_key = hmac_s256::key_from_bytes(empty_key);
 
@@ -474,7 +474,7 @@ impl TpmRS256 for SoftTpm {
 
                 let padding = rsa::Oaep::new::<sha1::Sha1>();
                 let cek_vec = key
-                    .decrypt(padding, &cek)
+                    .decrypt(padding, cek)
                     .map_err(|_| TpmError::RsaOaepDecrypt)?;
 
                 let content_encryption_key =
@@ -887,6 +887,7 @@ mod tests {
 
         assert_eq!(ms_oapxbc_public_der, public_der);
 
+        #[allow(deprecated)]
         let yielded_secret_a = soft_tpm
             .rs256_unseal_data(&ms_oapxbc_key, &loadable_session_key)
             .unwrap();

@@ -94,6 +94,7 @@ pub enum TpmError {
     TssRs256SignatureInvalid,
     TpmRs256OaepInvalidInputLength,
     TssRs256OaepDecrypt,
+    TssRs256UnsealNotSupported,
     TssRsaPublicFromComponents,
     TssKeyObjectAttributesInvalid,
     TssKeyAlgorithmInvalid,
@@ -102,8 +103,10 @@ pub enum TpmError {
     TssInvalidSignature,
     TssKeySign,
     TssKeyDigest,
+    TssSealingKeyLoad,
     TssSealDataTooLarge,
     TssSeal,
+    TssUnseal,
 
     // TpmIdentityKeyCreate,
     // TpmIdentityKeySign,

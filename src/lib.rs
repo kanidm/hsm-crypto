@@ -1,5 +1,4 @@
-// #![deny(warnings)]
-
+#![deny(warnings)]
 #![allow(dead_code)]
 #![warn(unused_extern_crates)]
 // Enable some groups of clippy lints.

@@ -388,10 +388,6 @@ pub(crate) fn test_tpm_msoapxbc<T: Tpm + TpmRS256 + TpmMsExtensions>(mut tpm_a: 
         .rs256_load(&rsk, &loadable_rs256_key)
         .expect("Unable to load rs256 key");
 
-    let pub_key = tpm_a
-        .rs256_public(&rs256_key)
-        .expect("Unable to retrieve rs256 public key");
-
     let secret = [0, 1, 2, 3, 4, 5, 6, 7];
 
     let enc_secret = tpm_a
