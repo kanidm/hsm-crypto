@@ -12,11 +12,12 @@ use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::interface_types::session_handles::AuthSession;
 use tss_esapi::structures::{Auth, Private, Public};
 use tss_esapi::structures::{
-    CreateKeyResult, CreatePrimaryKeyResult, Digest, EccParameter, EccPoint, EccScheme,
+    CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccParameter, EccPoint, EccScheme,
     EccSignature, HashScheme, HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder,
     PublicEccParametersBuilder, PublicKeyRsa, PublicKeyedHashParameters,
-    PublicRsaParametersBuilder, RsaExponent, RsaScheme, RsaSignature, Signature, SignatureScheme,
-    SymmetricCipherParameters, SymmetricDefinition, SymmetricDefinitionObject,
+    PublicRsaParametersBuilder, RsaDecryptionScheme, RsaExponent, RsaScheme, RsaSignature,
+    SensitiveData, Signature, SignatureScheme, SymmetricCipherParameters, SymmetricDefinition,
+    SymmetricDefinitionObject,
 };
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
 use tss_esapi::utils::TpmsContext;
@@ -39,7 +40,7 @@ use crypto_glue::{
         EcdsaP256Signature,
     },
     hmac_s256::{self, HmacSha256Output},
-    rsa::{RS256PublicKey, RS256Signature},
+    rsa::{self, RS256PublicKey, RS256Signature},
     s256::{Sha256, Sha256Output},
     traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
 };
@@ -964,22 +965,26 @@ impl TpmRS256 for TssTpm {
             .with_sensitive_data_origin(true)
             .with_user_with_auth(true)
             .with_sign_encrypt(true)
+            // NEEDED FOR RSA OAEP
+            .with_decrypt(true)
             .build()
             .map_err(|tpm_err| {
                 error!(?tpm_err);
                 TpmError::TssKeyObjectAttributesInvalid
             })?;
 
-        let rsa_params = PublicRsaParametersBuilder::new_unrestricted_signing_key(
-            RsaScheme::RsaSsa(HashScheme::new(HashingAlgorithm::Sha256)),
-            RsaKeyBits::Rsa2048,
-            RsaExponent::default(),
-        )
-        .build()
-        .map_err(|tpm_err| {
-            error!(?tpm_err);
-            TpmError::TssKeyAlgorithmInvalid
-        })?;
+        let rsa_params = PublicRsaParametersBuilder::new()
+            .with_scheme(RsaScheme::Null)
+            .with_key_bits(RsaKeyBits::Rsa2048)
+            .with_exponent(RsaExponent::default())
+            .with_is_decryption_key(true)
+            .with_is_signing_key(true)
+            .with_restricted(false)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyAlgorithmInvalid
+            })?;
 
         let key_pub = PublicBuilder::new()
             .with_public_algorithm(PublicAlgorithm::Rsa)
@@ -1037,11 +1042,43 @@ impl TpmRS256 for TssTpm {
 
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
         let rs256_key_context = match rs256_key {
-            RS256Key::Tpm { key_context } => key_context,
+            RS256Key::Tpm { key_context } => key_context.clone(),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        todo!();
+        let (public, _, _) = self.execute_with_temporary_object_context(
+            rs256_key_context,
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .read_public(key_handle.into())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssKeyReadPublic
+                    })
+            },
+        )?;
+
+        let Public::Rsa {
+            parameters: params,
+            unique,
+            ..
+        } = public
+        else {
+            return Err(TpmError::IncorrectKeyType);
+        };
+
+        // This is a big endian signed value as expected
+        let n = rsa::BigUint::from_bytes_be(unique.as_slice());
+
+        // Gotcha https://docs.rs/tss-esapi/latest/src/tss_esapi/abstraction/public.rs.html#81
+        // If value == 0, set default of 65537
+        let mut e_u32 = params.exponent().value();
+        if e_u32 == 0 {
+            e_u32 = 65537;
+        };
+
+        RS256PublicKey::new(n, e_u32.into()).map_err(|_| TpmError::TssRsaPublicFromComponents)
     }
 
     fn rs256_sign(
@@ -1050,11 +1087,57 @@ impl TpmRS256 for TssTpm {
         data: &[u8],
     ) -> Result<RS256Signature, TpmError> {
         let rs256_key_context = match rs256_key {
-            RS256Key::Tpm { key_context } => key_context,
+            RS256Key::Tpm { key_context } => key_context.clone(),
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        todo!();
+        let sig_scheme = SignatureScheme::RsaSsa {
+            scheme: HashScheme::new(HashingAlgorithm::Sha256),
+        };
+
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let digest_bytes: Sha256Output = hasher.finalize();
+
+        let tpm_digest: Digest =
+            Digest::from_bytes(digest_bytes.as_slice()).map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyDigest
+            })?;
+
+        // No need for hashcheck, unrestricted key.
+        let validation: HashcheckTicket = TPMT_TK_HASHCHECK {
+            tag: TPM2_ST_HASHCHECK,
+            hierarchy: TPM2_RH_NULL,
+            digest: Default::default(),
+        }
+        .try_into()
+        .map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssKeyDigest
+        })?;
+
+        // Now we can sign.
+        let signature = self.execute_with_temporary_object_context(
+            rs256_key_context,
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .sign(key_handle.into(), tpm_digest, sig_scheme, validation)
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssKeySign
+                    })
+            },
+        )?;
+
+        tracing::debug!(?signature);
+
+        match signature {
+            Signature::RsaSsa(rsasig) => RS256Signature::try_from(rsasig.signature().as_slice())
+                .map_err(|_| TpmError::TssRs256SignatureInvalid),
+            _ => Err(TpmError::TssInvalidSignature),
+        }
     }
 
     fn rs256_oaep_dec(
@@ -1067,7 +1150,27 @@ impl TpmRS256 for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        todo!();
+        let encrypted_input = PublicKeyRsa::try_from(encrypted_data.to_vec())
+            .map_err(|_| TpmError::TpmRs256OaepInvalidInputLength)?;
+
+        self.execute_with_temporary_object_context(
+            rs256_key_context.clone(),
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .rsa_decrypt(
+                        key_handle.into(),
+                        encrypted_input,
+                        RsaDecryptionScheme::Oaep(HashScheme::new(HashingAlgorithm::Sha256)),
+                        Data::default(),
+                    )
+                    .map(|pk_rsa| pk_rsa.as_slice().to_vec())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssRs256OaepDecrypt
+                    })
+            },
+        )
     }
 
     fn rs256_unseal_data(
