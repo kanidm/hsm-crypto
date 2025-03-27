@@ -68,12 +68,29 @@ pub enum LoadableHmacS256Key {
         tag: Aes256GcmTag,
         nonce: Aes256GcmNonce,
     },
+    #[cfg(feature = "tpm")]
+    TpmSha256V1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmSha256V1 { private: (), public: () },
 }
 
 pub type LoadableHmacKey = LoadableHmacS256Key;
 
 pub enum HmacS256Key {
-    SoftAes256GcmV2 { key: HmacSha256Key },
+    SoftAes256GcmV2 {
+        key: HmacSha256Key,
+    },
+    #[cfg(feature = "tpm")]
+    Tpm {
+        key_context: TpmsContext,
+    },
+    #[cfg(not(feature = "tpm"))]
+    Tpm {
+        key_context: (),
+    },
 }
 
 pub enum LoadableES256Key {
@@ -86,7 +103,17 @@ pub enum LoadableES256Key {
 }
 
 pub enum ES256Key {
-    SoftAes256GcmV2 { key: EcdsaP256PrivateKey },
+    SoftAes256GcmV2 {
+        key: EcdsaP256PrivateKey,
+    },
+    #[cfg(feature = "tpm")]
+    Tpm {
+        key_context: TpmsContext,
+    },
+    #[cfg(not(feature = "tpm"))]
+    Tpm {
+        key_context: (),
+    },
 }
 
 pub enum LoadableRS256Key {
@@ -113,6 +140,10 @@ pub enum RS256Key {
         key: RS256PrivateKey,
         content_encryption_key: Aes256Key,
     },
+    #[cfg(feature = "tpm")]
+    Tpm { key_context: TpmsContext },
+    #[cfg(not(feature = "tpm"))]
+    Tpm { key_context: () },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

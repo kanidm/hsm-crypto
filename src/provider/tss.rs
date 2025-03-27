@@ -26,9 +26,14 @@ use tss_esapi::TctiNameConf;
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::Tpm;
-use crate::structures::{LoadableStorageKey, StorageKey};
+use crate::provider::{Tpm, TpmHmacS256};
+use crate::structures::{HmacS256Key, LoadableHmacS256Key, LoadableStorageKey, StorageKey};
 use tracing::error;
+
+use crypto_glue::{
+    hmac_s256::{self, HmacSha256Output},
+    s256::Sha256Output,
+};
 
 pub struct TssTpm {
     tpm_ctx: Context,
@@ -612,6 +617,132 @@ impl Tpm for TssTpm {
     }
 }
 
+impl TpmHmacS256 for TssTpm {
+    fn hmac_s256_create(
+        &mut self,
+        parent_key: &StorageKey,
+    ) -> Result<LoadableHmacS256Key, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let unique_key_identifier = self
+            .tpm_ctx
+            .get_random(16)
+            .and_then(|random| Digest::from_bytes(random.as_slice()))
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssEntropy
+            })?;
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssHmacKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::KeyedHash)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(
+                KeyedHashScheme::HMAC_SHA_256,
+            ))
+            .with_keyed_hash_unique_identifier(unique_key_identifier)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssHmacKeyBuilderInvalid
+            })?;
+
+        self.execute_with_temporary_object_context(
+            storage_key_context,
+            |hsm_ctx, storage_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .create(storage_key_handle.into(), key_pub, None, None, None, None)
+                    .map(
+                        |CreateKeyResult {
+                             out_private: private,
+                             out_public: public,
+                             creation_data: _,
+                             creation_hash: _,
+                             creation_ticket: _,
+                         }| {
+                            LoadableHmacS256Key::TpmSha256V1 { private, public }
+                        },
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssHmacKeyCreate
+                    })
+            },
+        )
+    }
+
+    fn hmac_s256_load(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &LoadableHmacS256Key,
+    ) -> Result<HmacS256Key, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let (private, public) = match hmac_key {
+            LoadableHmacS256Key::TpmSha256V1 { private, public } => (private, public),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        self.execute_key_load_to_context(storage_key_context, private.clone(), public.clone())
+            .map(|key_context| HmacS256Key::Tpm { key_context })
+    }
+
+    fn hmac_s256(
+        &mut self,
+        hmac_key: &HmacS256Key,
+        data: &[u8],
+    ) -> Result<HmacSha256Output, TpmError> {
+        let (hmac_key_context, hmac_alg) = match hmac_key {
+            HmacS256Key::Tpm { key_context } => (key_context, HashingAlgorithm::Sha256),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let data_buffer = MaxBuffer::from_bytes(data).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssHmacInputTooLarge
+        })?;
+
+        let digest = self.execute_with_temporary_object_context(
+            hmac_key_context.clone(),
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .hmac(key_handle, data_buffer, hmac_alg)
+                    .map(|digest| digest.as_bytes().to_vec())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssHmacSign
+                    })
+            },
+        )?;
+
+        let hmac_output = Sha256Output::from_exact_iter(digest.into_iter())
+            .ok_or(TpmError::TssHmacOutputInvalid)?;
+
+        Ok(HmacSha256Output::from(hmac_output))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TssTpm;
@@ -621,5 +752,12 @@ mod tests {
         let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
 
         crate::tests::test_tpm_storage(tss_tpm);
+    }
+
+    #[test]
+    fn tss_tpm_hmac() {
+        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
+
+        crate::tests::test_tpm_hmac(tss_tpm);
     }
 }

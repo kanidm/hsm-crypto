@@ -337,7 +337,9 @@ impl TpmHmacS256 for SoftTpm {
 
                 Ok(HmacS256Key::SoftAes256GcmV2 { key: empty_key })
             }
-            (StorageKey::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
+            (StorageKey::Tpm { .. }, _) | (_, LoadableHmacS256Key::TpmSha256V1 { .. }) => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 
@@ -348,6 +350,7 @@ impl TpmHmacS256 for SoftTpm {
     ) -> Result<HmacSha256Output, TpmError> {
         match hmac_key {
             HmacS256Key::SoftAes256GcmV2 { key } => Ok(hmac_s256::oneshot(key, data)),
+            HmacS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 }
@@ -398,6 +401,7 @@ impl TpmES256 for SoftTpm {
     fn es256_public(&mut self, es256_key: &ES256Key) -> Result<EcdsaP256PublicKey, TpmError> {
         match es256_key {
             ES256Key::SoftAes256GcmV2 { key } => Ok(key.public_key()),
+            ES256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 
@@ -416,6 +420,7 @@ impl TpmES256 for SoftTpm {
                     .try_sign_digest(digest)
                     .map_err(|_| TpmError::EcdsaSignature)
             }
+            ES256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 }
@@ -523,6 +528,7 @@ impl TpmRS256 for SoftTpm {
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
         match rs256_key {
             RS256Key::SoftAes256GcmV2 { key, .. } => Ok(RS256PublicKey::from(key)),
+            RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 
@@ -542,6 +548,7 @@ impl TpmRS256 for SoftTpm {
                     .try_sign_digest(digest)
                     .map_err(|_| TpmError::RsaPkcs115Sign)
             }
+            RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 
@@ -556,6 +563,7 @@ impl TpmRS256 for SoftTpm {
                 key.decrypt(padding, encrypted_data)
                     .map_err(|_| TpmError::RsaOaepDecrypt)
             }
+            RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 
@@ -583,6 +591,7 @@ impl TpmRS256 for SoftTpm {
             ) => {
                 unwrap_aes256gcm!(content_encryption_key, data, tag, nonce)
             }
+            (RS256Key::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
         }
     }
 }
@@ -611,6 +620,7 @@ impl TpmMsExtensions for SoftTpm {
                 wrap_aes256gcm!(content_encryption_key, key_to_wrap)
                     .map(|(data, tag, nonce)| SealedData::SoftAes256GcmV2 { data, tag, nonce })
             }
+            RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 }

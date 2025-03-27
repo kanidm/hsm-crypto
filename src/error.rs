@@ -66,7 +66,7 @@ pub enum TpmError {
     TssPrimaryObjectAttributesInvalid,
     TssPrimaryPublicBuilderInvalid,
     TssPrimaryCreate,
-    // TpmEntropy,
+    TssEntropy,
     TssAuthValueInvalid,
 
     // TpmMachineKeyObjectAttributesInvalid,
@@ -80,11 +80,12 @@ pub enum TpmError {
     TssStorageKeyObjectAttributesInvalid,
     TssStorageKeyBuilderInvalid,
 
-    // TpmHmacKeyObjectAttributesInvalid,
-    // TpmHmacKeyBuilderInvalid,
-    // TpmHmacKeyCreate,
-    // TpmHmacSign,
-    // TpmHmacInputTooLarge,
+    TssHmacKeyObjectAttributesInvalid,
+    TssHmacKeyBuilderInvalid,
+    TssHmacKeyCreate,
+    TssHmacSign,
+    TssHmacInputTooLarge,
+    TssHmacOutputInvalid,
 
     // TpmIdentityKeyObjectAttributesInvalid,
     // TpmIdentityKeyAlgorithmInvalid,
