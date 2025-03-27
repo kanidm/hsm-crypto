@@ -16,7 +16,7 @@ tpm = ["dep:tss-esapi", "dep:tss-esapi-sys"]
 [patch.crates-io]
 # tss-esapi-sys = { path = "../rust-tss-esapi/tss-esapi-sys", optional = true, features = ["generate-bindings"] }
 # tss-esapi = { path = "../rust-tss-esapi/tss-esapi", optional = true }
-crypto-glue = { path = "../crypto-glue" }
+# crypto-glue = { path = "../crypto-glue" }
 
 [dependencies]
 crypto-glue = "^0.1.1"
