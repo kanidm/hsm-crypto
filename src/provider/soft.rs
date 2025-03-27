@@ -184,7 +184,7 @@ impl Tpm for SoftTpm {
                     key: key_to_unwrap,
                     tag,
                     iv,
-                },>
+                },
             ) => {
                 let wrapping_key = pin.derive_aes_256(parent_key)?;
                 unwrap_aes256gcm_nonce16!(&wrapping_key, key_to_unwrap, tag, iv)
@@ -206,7 +206,7 @@ impl Tpm for SoftTpm {
     ) -> Result<SealedData, TpmError> {
         match key {
             StorageKey::SoftAes256GcmV2 { key: parent_key } => {
-                wrap_aes256gcm!(parent_key, key_to_wrap)
+                wrap_aes256gcm!(parent_key, data_to_seal)
                     .map(|(data, tag, nonce)| SealedData::SoftAes256GcmV2 { data, tag, nonce })
             }
             StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
@@ -868,11 +868,11 @@ mod tests {
         assert_eq!(&secret, yielded_secret_a.as_slice());
 
         let loadable_session_key = soft_tpm
-            .msoapxbc_rsa_decipher_session_key(&ms_oapxbc_key, &enc_secret, secret.len())
+            .msoapxbc_rsa_decipher_session_key(&ms_oapxbc_key, &root_storage, &enc_secret, secret.len())
             .unwrap();
 
         let yielded_secret_b = soft_tpm
-            .rs256_unseal_data(&ms_oapxbc_key, &loadable_session_key)
+            .unseal_data(&root_storage, &loadable_session_key)
             .unwrap();
 
         assert_eq!(&secret, yielded_secret_b.as_slice());

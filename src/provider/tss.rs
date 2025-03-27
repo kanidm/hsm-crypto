@@ -1187,12 +1187,11 @@ impl TpmRS256 for TssTpm {
 }
 
 impl TpmMsExtensions for TssTpm {
-    fn msoapxbc_rsa_decipher_session_key(
+    fn rs256_oaep_dec_sha1(
         &mut self,
         rs256_key: &RS256Key,
-        input: &[u8],
-        expected_key_len: usize,
-    ) -> Result<SealedData, TpmError> {
+        encrypted_data: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
         let rs256_key_context = match rs256_key {
             RS256Key::Tpm { key_context } => key_context,
             _ => return Err(TpmError::IncorrectKeyType),
@@ -1201,7 +1200,7 @@ impl TpmMsExtensions for TssTpm {
         let encrypted_input = PublicKeyRsa::try_from(input.to_vec())
             .map_err(|_| TpmError::TpmRs256OaepInvalidInputLength)?;
 
-        let mut key_to_wrap = self.execute_with_temporary_object_context(
+        self.execute_with_temporary_object_context(
             rs256_key_context.clone(),
             |hsm_ctx, key_handle| {
                 hsm_ctx
@@ -1218,71 +1217,7 @@ impl TpmMsExtensions for TssTpm {
                         TpmError::TssRs256OaepDecrypt
                     })
             },
-        )?;
-
-        key_to_wrap.truncate(expected_key_len);
-
-        let content_encryption_key = aes256::new_key();
-
-        let (data, tag, nonce) = wrap_aes256gcm!(&content_encryption_key, key_to_wrap)?;
-
-        let key_to_wrap = SensitiveData::from_bytes(key_to_wrap.as_slice())
-            .map_err(|_| TpmError::TssSealDataTooLarge)?;
-
-        // Tpm seal process
-        let object_attributes = ObjectAttributesBuilder::new()
-            .with_fixed_tpm(true)
-            .with_fixed_parent(true)
-            .with_st_clear(false)
-            .with_user_with_auth(true)
-            .build()
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TssKeyObjectAttributesInvalid
-            })?;
-
-        let key_pub = PublicBuilder::new()
-            .with_public_algorithm(PublicAlgorithm::KeyedHash)
-            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
-            .with_object_attributes(object_attributes)
-            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(KeyedHashScheme::Null))
-            .with_keyed_hash_unique_identifier(Digest::default())
-            .build()
-            .map_err(|tpm_err| {
-                error!(?tpm_err);
-                TpmError::TssKeyBuilderInvalid
-            })?;
-
-        let (private, public) = self.execute_with_temporary_object_context(
-            rs256_key_context.clone(),
-            |hsm_ctx, key_handle| {
-                hsm_ctx
-                    .tpm_ctx
-                    .create(
-                        key_handle.into(),
-                        key_pub,
-                        None,
-                        Some(key_to_wrap),
-                        None,
-                        None,
-                    )
-                    .map(
-                        |CreateKeyResult {
-                             out_private: private,
-                             out_public: public,
-                             creation_data: _,
-                             creation_hash: _,
-                             creation_ticket: _,
-                         }| { (private, public) },
-                    )
-                    .map_err(|tpm_err| {
-                        error!(?tpm_err);
-                        TpmError::TssSeal
-                    })
-            },
-        )?;
-
-        todo!();
+        )
     }
 }
 

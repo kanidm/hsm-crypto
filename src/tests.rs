@@ -387,11 +387,11 @@ pub(crate) fn test_tpm_msoapxbc<T: Tpm + TpmRS256 + TpmMsExtensions>(mut tpm_a: 
         .expect("Unable to encipher secret");
 
     let loadable_session_key = tpm_a
-        .msoapxbc_rsa_decipher_session_key(&rs256_key, &enc_secret, secret.len())
+        .msoapxbc_rsa_decipher_session_key(&rs256_key, &rsk, &enc_secret, secret.len())
         .unwrap();
 
     let yielded_secret = tpm_a
-        .rs256_unseal_data(&rs256_key, &loadable_session_key)
+        .unseal_data(&rsk, &loadable_session_key)
         .unwrap();
 
     assert_eq!(&secret, yielded_secret.as_slice());
