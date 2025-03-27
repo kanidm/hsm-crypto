@@ -11,6 +11,7 @@ use crypto_glue::hmac_s256::HmacSha256Output;
 use crypto_glue::rand;
 use crypto_glue::rsa::{self, RS256PublicKey, RS256Signature, RS256VerifyingKey};
 use crypto_glue::s256::{self, Sha256Output};
+use crypto_glue::sha1;
 use crypto_glue::spki;
 use crypto_glue::traits::*;
 use crypto_glue::x509::BitString;
@@ -284,14 +285,14 @@ pub trait TpmRS256 {
 pub trait TpmMsExtensions: TpmRS256 {
     fn msoapxbc_rsa_decipher_session_key(
         &mut self,
-        key: &RS256Key,
+        rs256_key: &RS256Key,
         input: &[u8],
         expected_key_len: usize,
     ) -> Result<SealedData, TpmError>;
 
     fn msoapxbc_rsa_encipher_session_key(
         &mut self,
-        key: &RS256Key,
+        rs256_key: &RS256Key,
         input: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
@@ -299,7 +300,7 @@ pub trait TpmMsExtensions: TpmRS256 {
         let mut rng = rand::thread_rng();
 
         public_key
-            .encrypt(&mut rng, padding, data)
+            .encrypt(&mut rng, padding, input)
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 }

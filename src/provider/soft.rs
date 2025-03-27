@@ -6,6 +6,7 @@ use crate::structures::{
     ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
     LoadableStorageKey, RS256Key, SealedData, StorageKey,
 };
+
 use crypto_glue::{
     aes256::{self},
     aes256gcm::{
@@ -22,87 +23,10 @@ use crypto_glue::{
 };
 use tracing::error;
 
+use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
+
 #[derive(Default)]
 pub struct SoftTpm {}
-
-macro_rules! wrap_aes256gcm {
-    (
-        $wrapping_key: expr,
-        $key_to_wrap: expr
-    ) => {{
-        let nonce = aes256gcm::new_nonce();
-        let cipher = Aes256Gcm::new($wrapping_key);
-
-        let associated_data = b"";
-        let mut enc_key = $key_to_wrap.clone();
-
-        let tag = cipher
-            .encrypt_in_place_detached(&nonce, associated_data, enc_key.as_mut_slice())
-            .map_err(|_| TpmError::Aes256GcmEncrypt)?;
-
-        if enc_key.as_slice() == $key_to_wrap.as_slice() {
-            // Encryption didn't replace the buffer in place, fail.
-            return Err(TpmError::Aes256GcmEncrypt);
-        }
-
-        Ok((enc_key, tag, nonce))
-    }};
-}
-
-macro_rules! unwrap_aes256gcm {
-    (
-        $wrapping_key: expr,
-        $key_to_unwrap: expr,
-        $tag: expr,
-        $nonce: expr
-    ) => {{
-        let cipher = Aes256Gcm::new($wrapping_key);
-
-        let mut key = $key_to_unwrap.clone();
-
-        let associated_data = b"";
-
-        cipher
-            .decrypt_in_place_detached($nonce, associated_data, key.as_mut_slice(), $tag)
-            .map_err(|_| TpmError::Aes256GcmDecrypt)?;
-
-        if key.as_slice() == $key_to_unwrap.as_slice() {
-            // Encryption didn't replace the buffer in place, fail.
-            return Err(TpmError::Aes256GcmDecrypt);
-        }
-
-        Ok(key)
-    }};
-}
-
-macro_rules! unwrap_aes256gcm_nonce16 {
-    (
-        $wrapping_key: expr,
-        $key_to_unwrap: expr,
-        $tag: expr,
-        $nonce: expr
-    ) => {{
-        let cipher = Aes256GcmN16::new($wrapping_key);
-
-        let mut key = $key_to_unwrap.clone();
-
-        let iv = Aes256GcmNonce16::from_slice($nonce);
-        let tag = Aes256GcmTag::from_slice($tag);
-
-        let associated_data = b"";
-
-        cipher
-            .decrypt_in_place_detached(iv, associated_data, key.as_mut_slice(), tag)
-            .map_err(|_| TpmError::Aes256GcmDecrypt)?;
-
-        if key.as_slice() == $key_to_unwrap.as_slice() {
-            // Encryption didn't replace the buffer in place, fail.
-            return Err(TpmError::Aes256GcmDecrypt);
-        }
-
-        Ok(key)
-    }};
-}
 
 impl Tpm for SoftTpm {
     // create a root-storage-key
@@ -601,7 +525,7 @@ impl TpmRS256 for SoftTpm {
 }
 
 impl TpmMsExtensions for SoftTpm {
-    fn msoapx_rsa_decipher_session_key(
+    fn msoapxbc_rsa_decipher_session_key(
         &mut self,
         key: &RS256Key,
         input: &[u8],
@@ -665,6 +589,13 @@ mod tests {
         let soft_tpm = SoftTpm::default();
 
         crate::tests::test_tpm_rs256(soft_tpm);
+    }
+
+    #[test]
+    fn soft_tpm_msoapxbc() {
+        let soft_tpm = SoftTpm::default();
+
+        crate::tests::test_tpm_msoapxbc(soft_tpm);
     }
 
     #[test]
@@ -934,11 +865,11 @@ mod tests {
         assert_eq!(&secret, yielded_secret_a.as_slice());
 
         let loadable_session_key = soft_tpm
-            .msoapx_rsa_decipher_session_key(&ms_oapxbc_key, &enc_secret, secret.len())
+            .msoapxbc_rsa_decipher_session_key(&ms_oapxbc_key, &enc_secret, secret.len())
             .unwrap();
 
         let yielded_secret_b = soft_tpm
-            .rs256_unseal_data(&ms_oapx_key, &loadable_session_key)
+            .rs256_unseal_data(&ms_oapxbc_key, &loadable_session_key)
             .unwrap();
 
         assert_eq!(&secret, yielded_secret_b.as_slice());

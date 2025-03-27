@@ -24,5 +24,7 @@ pub mod pin;
 pub mod provider;
 pub mod structures;
 
+pub(crate) mod wrap;
+
 #[cfg(test)]
 mod tests;

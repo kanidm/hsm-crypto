@@ -102,6 +102,8 @@ pub enum TpmError {
     TssInvalidSignature,
     TssKeySign,
     TssKeyDigest,
+    TssSealDataTooLarge,
+    TssSeal,
 
     // TpmIdentityKeyCreate,
     // TpmIdentityKeySign,

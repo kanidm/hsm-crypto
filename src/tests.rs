@@ -1,6 +1,6 @@
 use crate::authvalue::AuthValue;
 use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmRS256};
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
 use crate::structures::StorageKey;
 use crypto_glue::ecdsa_p256::EcdsaP256PublicKey;
 use crypto_glue::ecdsa_p256::EcdsaP256Signature;
@@ -380,11 +380,19 @@ pub(crate) fn test_tpm_msoapxbc<T: Tpm + TpmRS256 + TpmMsExtensions>(mut tpm_a: 
         .rs256_public(&rs256_key)
         .expect("Unable to retrieve rs256 public key");
 
-    let session_key = [0,1,2,3,4,5,6,7];
+    let secret = [0, 1, 2, 3, 4, 5, 6, 7];
 
-    let enc_session_key = tpm_a
-        .msoapxbc_rsa_encipher_session_key(&rs256_key, &session_key)
-        .expect("Unable to encipher session key");
+    let enc_secret = tpm_a
+        .msoapxbc_rsa_encipher_session_key(&rs256_key, &secret)
+        .expect("Unable to encipher secret");
 
+    let loadable_session_key = tpm_a
+        .msoapxbc_rsa_decipher_session_key(&rs256_key, &enc_secret, secret.len())
+        .unwrap();
 
+    let yielded_secret = tpm_a
+        .rs256_unseal_data(&rs256_key, &loadable_session_key)
+        .unwrap();
+
+    assert_eq!(&secret, yielded_secret.as_slice());
 }

@@ -27,7 +27,7 @@ use tss_esapi::TctiNameConf;
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmRS256};
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
 use crate::structures::{
     ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
     LoadableStorageKey, RS256Key, SealedData, StorageKey,
@@ -35,6 +35,8 @@ use crate::structures::{
 use tracing::error;
 
 use crypto_glue::{
+    aes256,
+    aes256gcm::{self, AeadInPlace, Aes256Gcm, KeyInit},
     ecdsa_p256::{
         EcdsaP256PublicCoordinate, EcdsaP256PublicEncodedPoint, EcdsaP256PublicKey,
         EcdsaP256Signature,
@@ -44,6 +46,8 @@ use crypto_glue::{
     s256::{Sha256, Sha256Output},
     traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
 };
+
+use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 
 pub struct TssTpm {
     tpm_ctx: Context,
@@ -1182,6 +1186,106 @@ impl TpmRS256 for TssTpm {
     }
 }
 
+impl TpmMsExtensions for TssTpm {
+    fn msoapxbc_rsa_decipher_session_key(
+        &mut self,
+        rs256_key: &RS256Key,
+        input: &[u8],
+        expected_key_len: usize,
+    ) -> Result<SealedData, TpmError> {
+        let rs256_key_context = match rs256_key {
+            RS256Key::Tpm { key_context } => key_context,
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let encrypted_input = PublicKeyRsa::try_from(input.to_vec())
+            .map_err(|_| TpmError::TpmRs256OaepInvalidInputLength)?;
+
+        let mut key_to_wrap = self.execute_with_temporary_object_context(
+            rs256_key_context.clone(),
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .rsa_decrypt(
+                        key_handle.into(),
+                        encrypted_input,
+                        RsaDecryptionScheme::Oaep(HashScheme::new(HashingAlgorithm::Sha1)),
+                        Data::default(),
+                    )
+                    .map(|pk_rsa| pk_rsa.as_slice().to_vec())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssRs256OaepDecrypt
+                    })
+            },
+        )?;
+
+        key_to_wrap.truncate(expected_key_len);
+
+        let content_encryption_key = aes256::new_key();
+
+        let (data, tag, nonce) = wrap_aes256gcm!(&content_encryption_key, key_to_wrap)?;
+
+        let key_to_wrap = SensitiveData::from_bytes(key_to_wrap.as_slice())
+            .map_err(|_| TpmError::TssSealDataTooLarge)?;
+
+        // Tpm seal process
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_user_with_auth(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyObjectAttributesInvalid
+            })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::KeyedHash)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_keyed_hash_parameters(PublicKeyedHashParameters::new(KeyedHashScheme::Null))
+            .with_keyed_hash_unique_identifier(Digest::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyBuilderInvalid
+            })?;
+
+        let (private, public) = self.execute_with_temporary_object_context(
+            rs256_key_context.clone(),
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .create(
+                        key_handle.into(),
+                        key_pub,
+                        None,
+                        Some(key_to_wrap),
+                        None,
+                        None,
+                    )
+                    .map(
+                        |CreateKeyResult {
+                             out_private: private,
+                             out_public: public,
+                             creation_data: _,
+                             creation_hash: _,
+                             creation_ticket: _,
+                         }| { (private, public) },
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssSeal
+                    })
+            },
+        )?;
+
+        todo!();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TssTpm;
@@ -1212,5 +1316,12 @@ mod tests {
         let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
 
         crate::tests::test_tpm_rs256(tss_tpm);
+    }
+
+    #[test]
+    fn tss_tpm_msoapxbc() {
+        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
+
+        crate::tests::test_tpm_msoapxbc(tss_tpm);
     }
 }
