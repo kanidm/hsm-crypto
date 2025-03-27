@@ -154,7 +154,7 @@ pub type LoadableMsOapxbcRsaKey = LoadableRS256Key;
 
 pub enum RS256Key {
     SoftAes256GcmV2 {
-        key: RS256PrivateKey,
+        key: Box<RS256PrivateKey>,
         content_encryption_key: Aes256Key,
     },
     #[cfg(feature = "tpm")]

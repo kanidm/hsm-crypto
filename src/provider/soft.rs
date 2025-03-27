@@ -449,6 +449,8 @@ impl TpmRS256 for SoftTpm {
                 let content_encryption_key =
                     unwrap_aes256gcm!(parent_key, cek_enc, cek_tag, cek_nonce)?;
 
+                let key = Box::new(key);
+
                 Ok(RS256Key::SoftAes256GcmV2 {
                     key,
                     content_encryption_key,
@@ -480,6 +482,8 @@ impl TpmRS256 for SoftTpm {
                 let content_encryption_key =
                     aes256::key_from_vec(cek_vec).ok_or(TpmError::Aes256KeyInvalid)?;
 
+                let key = Box::new(key);
+
                 Ok(RS256Key::SoftAes256GcmV2 {
                     key,
                     content_encryption_key,
@@ -493,7 +497,7 @@ impl TpmRS256 for SoftTpm {
 
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
         match rs256_key {
-            RS256Key::SoftAes256GcmV2 { key, .. } => Ok(RS256PublicKey::from(key)),
+            RS256Key::SoftAes256GcmV2 { key, .. } => Ok(RS256PublicKey::from(key.as_ref())),
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
@@ -508,7 +512,7 @@ impl TpmRS256 for SoftTpm {
                 let mut digest = RS256Digest::new();
                 digest.update(data);
 
-                let signer = RS256SigningKey::new(key.clone());
+                let signer = RS256SigningKey::new(key.as_ref().clone());
 
                 signer
                     .try_sign_digest(digest)
@@ -646,12 +650,10 @@ mod tests {
             ),
             tag: [
                 111, 73, 224, 22, 91, 180, 12, 192, 201, 109, 85, 109, 51, 52, 18, 182,
-            ]
-            .into(),
+            ],
             iv: [
                 87, 117, 127, 13, 107, 56, 93, 64, 136, 30, 67, 81, 37, 136, 60, 93,
-            ]
-            .into(),
+            ],
         };
 
         let loadable_hmac = LoadableHmacS256Key::SoftSha256V1 {
@@ -664,12 +666,10 @@ mod tests {
             ),
             tag: [
                 183, 248, 10, 77, 69, 161, 167, 131, 240, 17, 79, 47, 18, 117, 119, 163,
-            ]
-            .into(),
+            ],
             iv: [
                 195, 77, 79, 140, 167, 246, 59, 58, 76, 15, 75, 70, 121, 254, 54, 114,
-            ]
-            .into(),
+            ],
         };
 
         let expected_hmac = [

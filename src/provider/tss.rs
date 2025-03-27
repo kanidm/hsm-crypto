@@ -426,7 +426,6 @@ impl Tpm for TssTpm {
                         .map(|key_context| StorageKey::Tpm { key_context })
                         .map_err(|tpm_err| {
                             error!(?tpm_err);
-                            assert!(false);
                             TpmError::TssStorageKeyLoad
                         })
                 })
@@ -447,7 +446,7 @@ impl Tpm for TssTpm {
 
         let (sk_private, sk_public) = self.execute_with_temporary_object_context(
             storage_key_context,
-            |hsm_ctx, parent_key_handle| hsm_ctx.create_storage_key(None, parent_key_handle.into()),
+            |hsm_ctx, parent_key_handle| hsm_ctx.create_storage_key(None, parent_key_handle),
         )?;
 
         Ok(LoadableStorageKey::TpmAes128CfbV1 {
@@ -468,14 +467,14 @@ impl Tpm for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let (sk_private, sk_public) = match lsk {
-            LoadableStorageKey::TpmAes128CfbV1 {
-                private: None,
-                public: None,
-                sk_private,
-                sk_public,
-            } => (sk_private, sk_public),
-            _ => return Err(TpmError::IncorrectKeyType),
+        let LoadableStorageKey::TpmAes128CfbV1 {
+            private: None,
+            public: None,
+            sk_private,
+            sk_public,
+        } = lsk
+        else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         self.execute_key_load_to_context(storage_key_context, sk_private.clone(), sk_public.clone())
@@ -501,8 +500,8 @@ impl Tpm for TssTpm {
         self.execute_with_temporary_object_context(
             storage_key_context,
             |hsm_ctx, parent_key_handle| {
-                let (private, public) = hsm_ctx
-                    .create_storage_key(Some(tpm_auth_value.clone()), parent_key_handle.into())?;
+                let (private, public) =
+                    hsm_ctx.create_storage_key(Some(tpm_auth_value.clone()), parent_key_handle)?;
 
                 // Now do a temporary load and create for the storage key.
                 let key_handle = hsm_ctx
@@ -510,7 +509,6 @@ impl Tpm for TssTpm {
                     .load(parent_key_handle.into(), private.clone(), public.clone())
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
-                        assert!(false);
                         TpmError::TssStorageKeyLoad
                     })?;
 
@@ -523,11 +521,10 @@ impl Tpm for TssTpm {
                             .tr_set_auth(parent_key_handle, tpm_auth_value)
                             .map_err(|tpm_err| {
                                 error!(?tpm_err);
-                                assert!(false);
                                 TpmError::TssStorageKeyLoad
                             })?;
 
-                        hsm_ctx.create_storage_key(None, parent_key_handle.into())
+                        hsm_ctx.create_storage_key(None, parent_key_handle)
                     },
                 )?;
 
@@ -552,14 +549,14 @@ impl Tpm for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let (private, public, sk_private, sk_public) = match lsk {
-            LoadableStorageKey::TpmAes128CfbV1 {
-                private: Some(private),
-                public: Some(public),
-                sk_private,
-                sk_public,
-            } => (private, public, sk_private, sk_public),
-            _ => return Err(TpmError::IncorrectKeyType),
+        let LoadableStorageKey::TpmAes128CfbV1 {
+            private: Some(private),
+            public: Some(public),
+            sk_private,
+            sk_public,
+        } = lsk
+        else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         let tpm_auth_value = Auth::from_bytes(pin.value()).map_err(|tpm_err| {
@@ -575,7 +572,6 @@ impl Tpm for TssTpm {
                     .load(parent_key_handle.into(), private.clone(), public.clone())
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
-                        assert!(false);
                         TpmError::TssStorageKeyLoad
                     })
             },
@@ -591,7 +587,6 @@ impl Tpm for TssTpm {
                     .tr_set_auth(auth_parent_key_handle, tpm_auth_value.clone())
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
-                        assert!(false);
                         TpmError::TssStorageKeyLoad
                     })?;
 
@@ -604,7 +599,6 @@ impl Tpm for TssTpm {
                     )
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
-                        assert!(false);
                         TpmError::TssStorageKeyLoad
                     })
             },
@@ -617,7 +611,6 @@ impl Tpm for TssTpm {
                 .map(|key_context| StorageKey::Tpm { key_context })
                 .map_err(|tpm_err| {
                     error!(?tpm_err);
-                    assert!(false);
                     TpmError::TssStorageKeyLoad
                 })
         })
@@ -830,9 +823,8 @@ impl TpmHmacS256 for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let (private, public) = match hmac_key {
-            LoadableHmacS256Key::TpmSha256V1 { private, public } => (private, public),
-            _ => return Err(TpmError::IncorrectKeyType),
+        let LoadableHmacS256Key::TpmSha256V1 { private, public } = hmac_key else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         self.execute_key_load_to_context(storage_key_context, private.clone(), public.clone())
@@ -950,9 +942,8 @@ impl TpmES256 for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let (private, public) = match es256_key {
-            LoadableES256Key::TpmV1 { private, public } => (private, public),
-            _ => return Err(TpmError::IncorrectKeyType),
+        let LoadableES256Key::TpmV1 { private, public } = es256_key else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         self.execute_key_load_to_context(storage_key_context, private.clone(), public.clone())
@@ -985,9 +976,8 @@ impl TpmES256 for TssTpm {
         let x = EcdsaP256PublicCoordinate::from_exact_iter(unique.x().as_slice().iter().copied());
         let y = EcdsaP256PublicCoordinate::from_exact_iter(unique.y().as_slice().iter().copied());
 
-        let (x, y) = match (x, y) {
-            (Some(x), Some(y)) => (x, y),
-            _ => return Err(TpmError::TssEs256PublicCoordinatesInvalid),
+        let (Some(x), Some(y)) = (x, y) else {
+            return Err(TpmError::TssEs256PublicCoordinatesInvalid);
         };
 
         let encoded_point = EcdsaP256PublicEncodedPoint::from_affine_coordinates(&x, &y, false);
@@ -1060,9 +1050,8 @@ impl TpmES256 for TssTpm {
                     ecsig.signature_r().as_slice().iter().copied(),
                 );
 
-                let (s, r) = match (s, r) {
-                    (Some(s), Some(r)) => (s, r),
-                    _ => return Err(TpmError::TssEs256SignatureCoordinatesInvalid),
+                let (Some(s), Some(r)) = (s, r) else {
+                    return Err(TpmError::TssEs256SignatureCoordinatesInvalid);
                 };
 
                 EcdsaP256Signature::from_scalars(r, s)
@@ -1153,9 +1142,8 @@ impl TpmRS256 for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let (private, public) = match rs256_key {
-            LoadableRS256Key::TpmV1 { private, public } => (private, public),
-            _ => return Err(TpmError::IncorrectKeyType),
+        let LoadableRS256Key::TpmV1 { private, public } = rs256_key else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         self.execute_key_load_to_context(storage_key_context, private.clone(), public.clone())
@@ -1267,9 +1255,11 @@ impl TpmRS256 for TssTpm {
         rs256_key: &RS256Key,
         encrypted_data: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
-        let rs256_key_context = match rs256_key {
-            RS256Key::Tpm { key_context } => key_context,
-            _ => return Err(TpmError::IncorrectKeyType),
+        let RS256Key::Tpm {
+            key_context: rs256_key_context,
+        } = rs256_key
+        else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         let encrypted_input = PublicKeyRsa::try_from(encrypted_data.to_vec())
@@ -1310,9 +1300,11 @@ impl TpmMsExtensions for TssTpm {
         rs256_key: &RS256Key,
         encrypted_data: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
-        let rs256_key_context = match rs256_key {
-            RS256Key::Tpm { key_context } => key_context,
-            _ => return Err(TpmError::IncorrectKeyType),
+        let RS256Key::Tpm {
+            key_context: rs256_key_context,
+        } = rs256_key
+        else {
+            return Err(TpmError::IncorrectKeyType);
         };
 
         let encrypted_input = PublicKeyRsa::try_from(encrypted_data.to_vec())
