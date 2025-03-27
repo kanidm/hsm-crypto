@@ -202,7 +202,7 @@ impl Tpm for SoftTpm {
     fn seal_data(
         &mut self,
         key: &StorageKey,
-        data_to_seal: &[u8],
+        data_to_seal: Zeroizing<Vec<u8>>,
     ) -> Result<SealedData, TpmError> {
         match key {
             StorageKey::SoftAes256GcmV2 { key: parent_key } => {
@@ -210,6 +210,30 @@ impl Tpm for SoftTpm {
                     .map(|(data, tag, nonce)| SealedData::SoftAes256GcmV2 { data, tag, nonce })
             }
             StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    fn unseal_data(
+        &mut self,
+        key: &StorageKey,
+        data_to_unseal: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        match (key, data_to_unseal) {
+            (
+                StorageKey::SoftAes256GcmV2 { key: parent_key },
+                SealedData::SoftV1 { data, tag, iv },
+            ) => {
+                unwrap_aes256gcm_nonce16!(parent_key, data, tag, iv)
+            }
+            (
+                StorageKey::SoftAes256GcmV2 { key: parent_key },
+                SealedData::SoftAes256GcmV2 { data, tag, nonce },
+            ) => {
+                unwrap_aes256gcm!(parent_key, data, tag, nonce)
+            }
+            (StorageKey::Tpm { .. }, _) | (_, SealedData::TpmAes256GcmV2 { .. }) => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 
@@ -533,7 +557,9 @@ impl TpmRS256 for SoftTpm {
             ) => {
                 unwrap_aes256gcm!(content_encryption_key, data, tag, nonce)
             }
-            (RS256Key::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
+            (RS256Key::Tpm { .. }, _) | (_, SealedData::TpmAes256GcmV2 { .. }) => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 }
@@ -868,7 +894,12 @@ mod tests {
         assert_eq!(&secret, yielded_secret_a.as_slice());
 
         let loadable_session_key = soft_tpm
-            .msoapxbc_rsa_decipher_session_key(&ms_oapxbc_key, &root_storage, &enc_secret, secret.len())
+            .msoapxbc_rsa_decipher_session_key(
+                &ms_oapxbc_key,
+                &root_storage,
+                &enc_secret,
+                secret.len(),
+            )
             .unwrap();
 
         let yielded_secret_b = soft_tpm

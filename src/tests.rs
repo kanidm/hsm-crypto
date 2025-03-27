@@ -54,9 +54,21 @@ pub(crate) fn test_tpm_storage<T: Tpm>(mut tpm_a: T) {
 
     trace!(?loadable_child_storage_key);
 
-    let _storage_key = tpm_a
+    let storage_key = tpm_a
         .storage_key_load_pin(&root_storage_key, &pin, &loadable_child_storage_key)
         .expect("Unable to load child storage key.");
+
+    let secret = Zeroizing::new(vec![0, 1, 2, 3, 4, 5, 6, 7]);
+
+    let sealed_secret = tpm_a
+        .seal_data(&storage_key, secret.clone())
+        .expect("Unable to seal data");
+
+    let unsealed_secret = tpm_a
+        .unseal_data(&storage_key, &sealed_secret)
+        .expect("Unable to unseal data");
+
+    assert_eq!(unsealed_secret.as_slice(), secret.as_slice());
 }
 
 fn setup_tpm_test<T: Tpm>(tpm_a: &mut T) -> StorageKey {
@@ -390,9 +402,7 @@ pub(crate) fn test_tpm_msoapxbc<T: Tpm + TpmRS256 + TpmMsExtensions>(mut tpm_a: 
         .msoapxbc_rsa_decipher_session_key(&rs256_key, &rsk, &enc_secret, secret.len())
         .unwrap();
 
-    let yielded_secret = tpm_a
-        .unseal_data(&rsk, &loadable_session_key)
-        .unwrap();
+    let yielded_secret = tpm_a.unseal_data(&rsk, &loadable_session_key).unwrap();
 
     assert_eq!(&secret, yielded_secret.as_slice());
 }

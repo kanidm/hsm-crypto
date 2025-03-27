@@ -144,10 +144,7 @@ pub enum LoadableRS256Key {
         public: tpm::Public,
     },
     #[cfg(not(feature = "tpm"))]
-    TpmV1 {
-        private: (),
-        public: (),
-    },
+    TpmV1 { private: (), public: () },
 }
 
 pub type LoadableMsOapxbcRsaKey = LoadableRS256Key;
@@ -158,13 +155,9 @@ pub enum RS256Key {
         content_encryption_key: Aes256Key,
     },
     #[cfg(feature = "tpm")]
-    Tpm {
-        key_context: TpmsContext
-    },
+    Tpm { key_context: TpmsContext },
     #[cfg(not(feature = "tpm"))]
-    Tpm {
-        key_context: (),
-    },
+    Tpm { key_context: () },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +172,22 @@ pub enum SealedData {
         data: Zeroizing<Vec<u8>>,
         tag: Aes256GcmTag,
         nonce: Aes256GcmNonce,
+    },
+    #[cfg(feature = "tpm")]
+    TpmAes256GcmV2 {
+        private: tpm::Private,
+        public: tpm::Public,
+        data: Zeroizing<Vec<u8>>,
+        tag: Aes256GcmTag,
+        nonce: Aes256GcmNonce,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmAes256GcmV2 {
+        private: (),
+        public: (),
+        data: (),
+        tag: (),
+        nonce: (),
     },
 }
 

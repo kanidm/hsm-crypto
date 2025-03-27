@@ -629,6 +629,22 @@ impl Tpm for TssTpm {
                 })
         })
     }
+
+    fn seal_data(
+        &mut self,
+        key: &StorageKey,
+        data_to_seal: Zeroizing<Vec<u8>>,
+    ) -> Result<SealedData, TpmError> {
+        todo!()
+    }
+
+    fn unseal_data(
+        &mut self,
+        key: &StorageKey,
+        data_to_unseal: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        todo!()
+    }
 }
 
 impl TpmHmacS256 for TssTpm {
@@ -1197,7 +1213,7 @@ impl TpmMsExtensions for TssTpm {
             _ => return Err(TpmError::IncorrectKeyType),
         };
 
-        let encrypted_input = PublicKeyRsa::try_from(input.to_vec())
+        let encrypted_input = PublicKeyRsa::try_from(encrypted_data.to_vec())
             .map_err(|_| TpmError::TpmRs256OaepInvalidInputLength)?;
 
         self.execute_with_temporary_object_context(
@@ -1211,7 +1227,7 @@ impl TpmMsExtensions for TssTpm {
                         RsaDecryptionScheme::Oaep(HashScheme::new(HashingAlgorithm::Sha1)),
                         Data::default(),
                     )
-                    .map(|pk_rsa| pk_rsa.as_slice().to_vec())
+                    .map(|pk_rsa| Zeroizing::new(pk_rsa.as_slice().to_vec()))
                     .map_err(|tpm_err| {
                         error!(?tpm_err);
                         TpmError::TssRs256OaepDecrypt
