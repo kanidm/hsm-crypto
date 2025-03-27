@@ -394,7 +394,9 @@ impl TpmES256 for SoftTpm {
                         .map_err(|_| TpmError::EcKeyToPrivateKey)
                 })
                 .map(|key| ES256Key::SoftAes256GcmV2 { key }),
-            (StorageKey::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
+            (StorageKey::Tpm { .. }, _) | (_, LoadableES256Key::TpmV1 { .. }) => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 
@@ -521,7 +523,9 @@ impl TpmRS256 for SoftTpm {
                     content_encryption_key,
                 })
             }
-            (StorageKey::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
+            (StorageKey::Tpm { .. }, _) | (_, LoadableRS256Key::TpmV1 { .. }) => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 

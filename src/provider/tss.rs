@@ -26,13 +26,22 @@ use tss_esapi::TctiNameConf;
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmHmacS256};
-use crate::structures::{HmacS256Key, LoadableHmacS256Key, LoadableStorageKey, StorageKey};
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmRS256};
+use crate::structures::{
+    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
+    LoadableStorageKey, RS256Key, SealedData, StorageKey,
+};
 use tracing::error;
 
 use crypto_glue::{
+    ecdsa_p256::{
+        EcdsaP256PublicCoordinate, EcdsaP256PublicEncodedPoint, EcdsaP256PublicKey,
+        EcdsaP256Signature,
+    },
     hmac_s256::{self, HmacSha256Output},
-    s256::Sha256Output,
+    rsa::{RS256PublicKey, RS256Signature},
+    s256::{Sha256, Sha256Output},
+    traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
 };
 
 pub struct TssTpm {
@@ -743,6 +752,333 @@ impl TpmHmacS256 for TssTpm {
     }
 }
 
+impl TpmES256 for TssTpm {
+    fn es256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableES256Key, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyObjectAttributesInvalid
+            })?;
+
+        let ecc_params = PublicEccParametersBuilder::new_unrestricted_signing_key(
+            EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)),
+            EccCurve::NistP256,
+        )
+        .build()
+        .map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssKeyAlgorithmInvalid
+        })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::Ecc)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_ecc_parameters(ecc_params)
+            .with_ecc_unique_identifier(EccPoint::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyBuilderInvalid
+            })?;
+
+        self.execute_with_temporary_object_context(
+            storage_key_context,
+            |hsm_ctx, storage_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .create(storage_key_handle.into(), key_pub, None, None, None, None)
+                    .map(
+                        |CreateKeyResult {
+                             out_private: private,
+                             out_public: public,
+                             creation_data: _,
+                             creation_hash: _,
+                             creation_ticket: _,
+                         }| { LoadableES256Key::TpmV1 { private, public } },
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssEs256KeyCreate
+                    })
+            },
+        )
+    }
+
+    fn es256_load(
+        &mut self,
+        parent_key: &StorageKey,
+        es256_key: &LoadableES256Key,
+    ) -> Result<ES256Key, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let (private, public) = match es256_key {
+            LoadableES256Key::TpmV1 { private, public } => (private, public),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        self.execute_key_load_to_context(storage_key_context, private.clone(), public.clone())
+            .map(|key_context| ES256Key::Tpm { key_context })
+    }
+
+    fn es256_public(&mut self, es256_key: &ES256Key) -> Result<EcdsaP256PublicKey, TpmError> {
+        let es256_key_context = match es256_key {
+            ES256Key::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let (public, _, _) = self.execute_with_temporary_object_context(
+            es256_key_context,
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .read_public(key_handle.into())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssKeyReadPublic
+                    })
+            },
+        )?;
+
+        let Public::Ecc { unique, .. } = public else {
+            return Err(TpmError::IncorrectKeyType);
+        };
+
+        let x = EcdsaP256PublicCoordinate::from_exact_iter(unique.x().as_slice().iter().copied());
+        let y = EcdsaP256PublicCoordinate::from_exact_iter(unique.y().as_slice().iter().copied());
+
+        let (x, y) = match (x, y) {
+            (Some(x), Some(y)) => (x, y),
+            _ => return Err(TpmError::TssEs256PublicCoordinatesInvalid),
+        };
+
+        let encoded_point = EcdsaP256PublicEncodedPoint::from_affine_coordinates(&x, &y, false);
+
+        let maybe_pk = EcdsaP256PublicKey::from_encoded_point(&encoded_point);
+
+        if maybe_pk.is_some().into() {
+            Ok(maybe_pk.unwrap())
+        } else {
+            Err(TpmError::TssEs256PublicCoordinatesInvalid)
+        }
+    }
+
+    fn es256_sign(
+        &mut self,
+        es256_key: &ES256Key,
+        data: &[u8],
+    ) -> Result<EcdsaP256Signature, TpmError> {
+        let es256_key_context = match es256_key {
+            ES256Key::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let sig_scheme = SignatureScheme::Null;
+
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let digest_bytes: Sha256Output = hasher.finalize();
+
+        let tpm_digest: Digest =
+            Digest::from_bytes(digest_bytes.as_slice()).map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyDigest
+            })?;
+
+        // No need for hashcheck, unrestricted key.
+        let validation: HashcheckTicket = TPMT_TK_HASHCHECK {
+            tag: TPM2_ST_HASHCHECK,
+            hierarchy: TPM2_RH_NULL,
+            digest: Default::default(),
+        }
+        .try_into()
+        .map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssKeyDigest
+        })?;
+
+        // Now we can sign.
+        let signature = self.execute_with_temporary_object_context(
+            es256_key_context,
+            |hsm_ctx, key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .sign(key_handle.into(), tpm_digest, sig_scheme, validation)
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssKeySign
+                    })
+            },
+        )?;
+
+        tracing::debug!(?signature);
+
+        match signature {
+            Signature::EcDsa(ecsig) => {
+                let s = EcdsaP256PublicCoordinate::from_exact_iter(
+                    ecsig.signature_s().as_slice().iter().copied(),
+                );
+                let r = EcdsaP256PublicCoordinate::from_exact_iter(
+                    ecsig.signature_r().as_slice().iter().copied(),
+                );
+
+                let (s, r) = match (s, r) {
+                    (Some(s), Some(r)) => (s, r),
+                    _ => return Err(TpmError::TssEs256SignatureCoordinatesInvalid),
+                };
+
+                EcdsaP256Signature::from_scalars(r, s)
+                    .map_err(|_| TpmError::TssEs256SignatureCoordinatesInvalid)
+            }
+            _ => Err(TpmError::TssInvalidSignature),
+        }
+    }
+}
+
+impl TpmRS256 for TssTpm {
+    fn rs256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableRS256Key, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_st_clear(false)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyObjectAttributesInvalid
+            })?;
+
+        let rsa_params = PublicRsaParametersBuilder::new_unrestricted_signing_key(
+            RsaScheme::RsaSsa(HashScheme::new(HashingAlgorithm::Sha256)),
+            RsaKeyBits::Rsa2048,
+            RsaExponent::default(),
+        )
+        .build()
+        .map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssKeyAlgorithmInvalid
+        })?;
+
+        let key_pub = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::Rsa)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_rsa_parameters(rsa_params)
+            .with_rsa_unique_identifier(PublicKeyRsa::default())
+            .build()
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssKeyBuilderInvalid
+            })?;
+
+        self.execute_with_temporary_object_context(
+            storage_key_context,
+            |hsm_ctx, storage_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .create(storage_key_handle.into(), key_pub, None, None, None, None)
+                    .map(
+                        |CreateKeyResult {
+                             out_private: private,
+                             out_public: public,
+                             creation_data: _,
+                             creation_hash: _,
+                             creation_ticket: _,
+                         }| { LoadableRS256Key::TpmV1 { private, public } },
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssRs256KeyCreate
+                    })
+            },
+        )
+    }
+
+    fn rs256_load(
+        &mut self,
+        parent_key: &StorageKey,
+        rs256_key: &LoadableRS256Key,
+    ) -> Result<RS256Key, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let (private, public) = match rs256_key {
+            LoadableRS256Key::TpmV1 { private, public } => (private, public),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        self.execute_key_load_to_context(storage_key_context, private.clone(), public.clone())
+            .map(|key_context| RS256Key::Tpm { key_context })
+    }
+
+    fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
+        let rs256_key_context = match rs256_key {
+            RS256Key::Tpm { key_context } => key_context,
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        todo!();
+    }
+
+    fn rs256_sign(
+        &mut self,
+        rs256_key: &RS256Key,
+        data: &[u8],
+    ) -> Result<RS256Signature, TpmError> {
+        let rs256_key_context = match rs256_key {
+            RS256Key::Tpm { key_context } => key_context,
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        todo!();
+    }
+
+    fn rs256_oaep_dec(
+        &mut self,
+        rs256_key: &RS256Key,
+        encrypted_data: &[u8],
+    ) -> Result<Vec<u8>, TpmError> {
+        let rs256_key_context = match rs256_key {
+            RS256Key::Tpm { key_context } => key_context,
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        todo!();
+    }
+
+    fn rs256_unseal_data(
+        &mut self,
+        key: &RS256Key,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        todo!();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TssTpm;
@@ -759,5 +1095,19 @@ mod tests {
         let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
 
         crate::tests::test_tpm_hmac(tss_tpm);
+    }
+
+    #[test]
+    fn tss_tpm_ecdsa_p256() {
+        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
+
+        crate::tests::test_tpm_ecdsa_p256(tss_tpm);
+    }
+
+    #[test]
+    fn tss_tpm_rs256() {
+        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
+
+        crate::tests::test_tpm_rs256(tss_tpm);
     }
 }

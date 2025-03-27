@@ -100,6 +100,13 @@ pub enum LoadableES256Key {
         tag: Aes256GcmTag,
         nonce: Aes256GcmNonce,
     },
+    #[cfg(feature = "tpm")]
+    TpmV1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmV1 { private: (), public: () },
 }
 
 pub enum ES256Key {
@@ -131,6 +138,13 @@ pub enum LoadableRS256Key {
         cek_tag: Aes256GcmTag,
         cek_nonce: Aes256GcmNonce,
     },
+    #[cfg(feature = "tpm")]
+    TpmV1 {
+        private: tpm::Private,
+        public: tpm::Public,
+    },
+    #[cfg(not(feature = "tpm"))]
+    TpmV1 { private: (), public: () },
 }
 
 pub type LoadableMsOapxbcRsaKey = LoadableRS256Key;
