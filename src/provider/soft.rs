@@ -184,7 +184,7 @@ impl Tpm for SoftTpm {
                     key: key_to_unwrap,
                     tag,
                     iv,
-                },
+                },>
             ) => {
                 let wrapping_key = pin.derive_aes_256(parent_key)?;
                 unwrap_aes256gcm_nonce16!(&wrapping_key, key_to_unwrap, tag, iv)
@@ -196,6 +196,20 @@ impl Tpm for SoftTpm {
             (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) | (StorageKey::Tpm { .. }, _) => {
                 Err(TpmError::IncorrectKeyType)
             }
+        }
+    }
+
+    fn seal_data(
+        &mut self,
+        key: &StorageKey,
+        data_to_seal: &[u8],
+    ) -> Result<SealedData, TpmError> {
+        match key {
+            StorageKey::SoftAes256GcmV2 { key: parent_key } => {
+                wrap_aes256gcm!(parent_key, key_to_wrap)
+                    .map(|(data, tag, nonce)| SealedData::SoftAes256GcmV2 { data, tag, nonce })
+            }
+            StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 
@@ -525,28 +539,17 @@ impl TpmRS256 for SoftTpm {
 }
 
 impl TpmMsExtensions for SoftTpm {
-    fn msoapxbc_rsa_decipher_session_key(
+    fn rs256_oaep_dec_sha1(
         &mut self,
-        key: &RS256Key,
-        input: &[u8],
-        expected_key_len: usize,
-    ) -> Result<SealedData, TpmError> {
-        match key {
-            RS256Key::SoftAes256GcmV2 {
-                key,
-                content_encryption_key,
-            } => {
-                // Thanks microsoft.
+        rs256_key: &RS256Key,
+        encrypted_data: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
+        match rs256_key {
+            RS256Key::SoftAes256GcmV2 { key, .. } => {
                 let padding = rsa::Oaep::new::<sha1::Sha1>();
-                let mut key_to_wrap = key
-                    .decrypt(padding, input)
-                    .map(|data| Zeroizing::new(data))
-                    .map_err(|_| TpmError::RsaOaepDecrypt)?;
-
-                key_to_wrap.truncate(expected_key_len);
-
-                wrap_aes256gcm!(content_encryption_key, key_to_wrap)
-                    .map(|(data, tag, nonce)| SealedData::SoftAes256GcmV2 { data, tag, nonce })
+                key.decrypt(padding, encrypted_data)
+                    .map(|data| data.into())
+                    .map_err(|_| TpmError::RsaOaepDecrypt)
             }
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }

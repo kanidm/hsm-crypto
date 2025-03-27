@@ -59,6 +59,18 @@ pub trait Tpm {
         pin: &PinValue,
         lsk: &LoadableStorageKey,
     ) -> Result<StorageKey, TpmError>;
+
+    fn seal_data(
+        &mut self,
+        key: &StorageKey,
+        data_to_seal: &[u8],
+    ) -> Result<SealedData, TpmError>;
+
+    fn unseal_data(
+        &mut self,
+        key: &StorageKey,
+        sealed_data: &SealedData,
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
 }
 
 pub trait TpmHmacS256 {
@@ -205,6 +217,7 @@ pub trait TpmRS256 {
     fn rs256_sign(&mut self, rs256_key: &RS256Key, data: &[u8])
         -> Result<RS256Signature, TpmError>;
 
+    #[deprecated(since = "0.3.0", note = "RS256 Keys no longer have associated content encryption keys - use storage keys instead")]
     fn rs256_unseal_data(
         &mut self,
         key: &RS256Key,
@@ -283,12 +296,25 @@ pub trait TpmRS256 {
 }
 
 pub trait TpmMsExtensions: TpmRS256 {
+    fn rs256_oaep_dec_sha1(
+        &mut self,
+        rs256_key: &RS256Key,
+        encrypted_data: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+
     fn msoapxbc_rsa_decipher_session_key(
         &mut self,
         rs256_key: &RS256Key,
+        parent_key: &StorageKey,
         input: &[u8],
         expected_key_len: usize,
-    ) -> Result<SealedData, TpmError>;
+    ) -> Result<SealedData, TpmError> {
+        let mut data = self.rs256_oaep_dec_sha1(rs256_key, input)?;
+
+        data.truncate(expected_key_len);
+
+        self.seal_data(parent_key, &data)
+    }
 
     fn msoapxbc_rsa_encipher_session_key(
         &mut self,
