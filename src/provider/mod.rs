@@ -288,4 +288,18 @@ pub trait TpmMsExtensions: TpmRS256 {
         input: &[u8],
         expected_key_len: usize,
     ) -> Result<SealedData, TpmError>;
+
+    fn msoapxbc_rsa_encipher_session_key(
+        &mut self,
+        key: &RS256Key,
+        input: &[u8],
+    ) -> Result<Vec<u8>, TpmError> {
+        let public_key = self.rs256_public(rs256_key)?;
+        let padding = rsa::Oaep::new::<sha1::Sha1>();
+        let mut rng = rand::thread_rng();
+
+        public_key
+            .encrypt(&mut rng, padding, data)
+            .map_err(|_| TpmError::RsaOaepEncrypt)
+    }
 }

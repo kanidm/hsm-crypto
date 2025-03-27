@@ -601,7 +601,7 @@ impl TpmRS256 for SoftTpm {
 }
 
 impl TpmMsExtensions for SoftTpm {
-    fn msoapxbc_rsa_decipher_session_key(
+    fn msoapx_rsa_decipher_session_key(
         &mut self,
         key: &RS256Key,
         input: &[u8],
@@ -934,11 +934,11 @@ mod tests {
         assert_eq!(&secret, yielded_secret_a.as_slice());
 
         let loadable_session_key = soft_tpm
-            .msoapxbc_rsa_decipher_session_key(&ms_oapxbc_key, &enc_secret, secret.len())
+            .msoapx_rsa_decipher_session_key(&ms_oapxbc_key, &enc_secret, secret.len())
             .unwrap();
 
         let yielded_secret_b = soft_tpm
-            .rs256_unseal_data(&ms_oapxbc_key, &loadable_session_key)
+            .rs256_unseal_data(&ms_oapx_key, &loadable_session_key)
             .unwrap();
 
         assert_eq!(&secret, yielded_secret_b.as_slice());

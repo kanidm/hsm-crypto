@@ -364,3 +364,27 @@ pub(crate) fn test_tpm_rs256<T: Tpm + TpmRS256>(mut tpm_a: T) {
         .verify(&cert_data_to_validate, &cert_signature)
         .is_ok());
 }
+
+pub(crate) fn test_tpm_msoapxbc<T: Tpm + TpmRS256 + TpmMsExtensions>(mut tpm_a: T) {
+    let rsk = setup_tpm_test(&mut tpm_a);
+
+    let loadable_rs256_key = tpm_a
+        .rs256_create(&rsk)
+        .expect("Unable to create rs256 key");
+
+    let rs256_key = tpm_a
+        .rs256_load(&rsk, &loadable_rs256_key)
+        .expect("Unable to load rs256 key");
+
+    let pub_key = tpm_a
+        .rs256_public(&rs256_key)
+        .expect("Unable to retrieve rs256 public key");
+
+    let session_key = [0,1,2,3,4,5,6,7];
+
+    let enc_session_key = tpm_a
+        .msoapxbc_rsa_encipher_session_key(&rs256_key, &session_key)
+        .expect("Unable to encipher session key");
+
+
+}
