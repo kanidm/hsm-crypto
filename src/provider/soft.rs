@@ -635,6 +635,7 @@ mod tests {
     fn test_legacy_hmac_load() {
         let _ = tracing_subscriber::fmt::try_init();
 
+        // Test values were extracted from version 0.2.0 for compatibility checking
         let auth_value = AuthValue::from([
             252, 167, 3, 221, 57, 147, 94, 141, 210, 66, 87, 126, 91, 77, 169, 43, 42, 92, 171, 74,
             158, 85, 161, 55, 79, 85, 180, 29, 12, 209, 19, 173,
@@ -705,6 +706,7 @@ mod tests {
     fn test_legacy_ms_oapxbc_load() {
         let _ = tracing_subscriber::fmt::try_init();
 
+        // Test values were extracted from version 0.2.0 for compatibility checking
         let auth_value = AuthValue::from([
             13, 98, 135, 87, 35, 238, 254, 8, 65, 7, 84, 138, 101, 116, 123, 94, 2, 117, 7, 7, 162,
             201, 147, 126, 203, 90, 201, 218, 133, 124, 70, 134,

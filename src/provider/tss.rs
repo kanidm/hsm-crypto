@@ -344,8 +344,6 @@ impl Tpm for TssTpm {
                 })
             },
         )
-
-        // Remember this isn't loaded and can't be used yet!
     }
 
     // load root storage key

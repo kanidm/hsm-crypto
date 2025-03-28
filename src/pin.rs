@@ -12,6 +12,14 @@ pub(crate) const TPM_PIN_MIN_LEN: u8 = 6;
 // as that's the size of sha256 output.
 pub(crate) const TPM_PIN_MAX_LEN: u8 = 32;
 
+// These can't be changed else it will break key derivation.
+//
+// To increase these parameters we need to introduce a new pin
+// derive function that has the new values.
+const ARGON2ID_MEMORY: u32 = 32_768;
+const ARGON2ID_TIME: u32 = 1;
+const ARGON2ID_PARALLEL: u32 = 1;
+
 pub struct PinValue {
     value: Zeroizing<Vec<u8>>,
 }
@@ -43,19 +51,24 @@ impl PinValue {
     pub(crate) fn derive_aes_256(&self, parent_key: &Aes256Key) -> Result<Aes256Key, TpmError> {
         use argon2::{Algorithm, Argon2, Params, Version};
 
-        let mut auth_key = Aes256Key::default();
-
-        // This can't be changed else it will break key derivation for users.
-        let argon2id_params =
-            Params::new(32_768, 1, 1, Some(aes256::key_size())).map_err(|argon_err| {
-                error!(?argon_err);
-                TpmError::AuthValueDerivation
-            })?;
-
         // Want at least 8 bytes salt, 16 bytes pw input.
         if parent_key.len() < 24 {
             return Err(TpmError::AuthValueTooShort);
         }
+
+        let mut auth_key = Aes256Key::default();
+
+        // This can't be changed else it will break key derivation for users.
+        let argon2id_params = Params::new(
+            ARGON2ID_MEMORY,
+            ARGON2ID_TIME,
+            ARGON2ID_PARALLEL,
+            Some(aes256::key_size()),
+        )
+        .map_err(|argon_err| {
+            error!(?argon_err);
+            TpmError::AuthValueDerivation
+        })?;
 
         let (salt, pepper) = parent_key.as_slice().split_at(argon2::MIN_SALT_LEN);
 

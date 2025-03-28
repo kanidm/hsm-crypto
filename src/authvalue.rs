@@ -8,6 +8,14 @@ use crypto_glue::{
 use std::str::FromStr;
 use tracing::error;
 
+// These can't be changed else it will break key derivation.
+//
+// To increase these parameters we need to introduce a new AuthValue Key
+// enum variant which has the changed values.
+const ARGON2ID_MEMORY: u32 = 32_768;
+const ARGON2ID_TIME: u32 = 4;
+const ARGON2ID_PARALLEL: u32 = 1;
+
 pub enum AuthValue {
     Key256Bit { auth_key: Aes256Key },
 }
@@ -39,21 +47,26 @@ impl AuthValue {
     pub fn derive_from_bytes(cleartext: &[u8]) -> Result<Self, TpmError> {
         use argon2::{Algorithm, Argon2, Params, Version};
 
-        let mut auth_key = Aes256Key::default();
-
-        // This can't be changed else it will break key derivation for users.
-        let argon2id_params =
-            Params::new(32_768, 4, 1, Some(aes256::key_size())).map_err(|argon_err| {
-                error!(?argon_err);
-                TpmError::AuthValueDerivation
-            })?;
-
-        let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2id_params);
-
         // Want at least 8 bytes salt, 16 bytes pw input.
         if cleartext.len() < 24 {
             return Err(TpmError::AuthValueTooShort);
         }
+
+        let mut auth_key = Aes256Key::default();
+
+        // This can't be changed else it will break key derivation for users.
+        let argon2id_params = Params::new(
+            ARGON2ID_MEMORY,
+            ARGON2ID_TIME,
+            ARGON2ID_PARALLEL,
+            Some(aes256::key_size()),
+        )
+        .map_err(|argon_err| {
+            error!(?argon_err);
+            TpmError::AuthValueDerivation
+        })?;
+
+        let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2id_params);
 
         let (salt, key) = cleartext.split_at(argon2::MIN_SALT_LEN);
 
