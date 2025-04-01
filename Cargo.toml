@@ -1,7 +1,7 @@
 [package]
 name = "kanidm-hsm-crypto"
 description = "A library for easily interacting with a HSM or TPM"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "MPL-2.0"
 homepage = "https://github.com/kanidm/hsm-crypto/"
@@ -12,12 +12,14 @@ rust-version = "1.79"
 [features]
 # default = ["tpm"]
 tpm = ["dep:tss-esapi", "dep:tss-esapi-sys"]
-msextensions = []
+
+[patch.crates-io]
+# tss-esapi-sys = { path = "../rust-tss-esapi/tss-esapi-sys", optional = true, features = ["generate-bindings"] }
+# tss-esapi = { path = "../rust-tss-esapi/tss-esapi", optional = true }
+# crypto-glue = { path = "../crypto-glue" }
 
 [dependencies]
-argon2 = { version = "0.5.2", features = ["alloc"] }
-hex = "0.4.3"
-openssl = "^0.10.57"
+crypto-glue = "^0.1.2"
 serde = { version = "^1.0", features = ["derive"] }
 tracing = "^0.1.37"
 tss-esapi-sys = { version = "0.5.0", optional = true, features = [
@@ -25,10 +27,8 @@ tss-esapi-sys = { version = "0.5.0", optional = true, features = [
 ] }
 tss-esapi = { version = "=8.0.0-alpha", optional = true }
 
-# tss-esapi-sys = { path = "../rust-tss-esapi/tss-esapi-sys", optional = true, features = ["generate-bindings"] }
-# tss-esapi = { path = "../rust-tss-esapi/tss-esapi", optional = true }
-
-zeroize = "1.6.0"
-
 [dev-dependencies]
 tracing-subscriber = "^0.3.17"
+
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
