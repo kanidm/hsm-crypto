@@ -17,11 +17,17 @@
 #![deny(clippy::manual_let_else)]
 #![allow(clippy::unreachable)]
 
-pub mod authvalue;
-pub mod error;
-pub mod pin;
-pub mod provider;
+mod authvalue;
+mod error;
+mod pin;
 pub mod structures;
+pub mod provider;
+
+pub use {
+    authvalue::AuthValue,
+    error::TpmError,
+    pin::PinValue,
+};
 
 pub(crate) mod wrap;
 
