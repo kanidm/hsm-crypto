@@ -9,7 +9,7 @@ use crate::structures::{LoadableStorageKey, StorageKey};
 use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
 use crypto_glue::hmac_s256::HmacSha256Output;
 use crypto_glue::rand;
-use crypto_glue::rsa::{self, RS256PublicKey, RS256Signature, RS256VerifyingKey};
+use crypto_glue::rsa::{self, RS256PrivateKey, RS256PublicKey, RS256Signature, RS256VerifyingKey};
 use crypto_glue::s256::{self, Sha256Output};
 use crypto_glue::sha1;
 use crypto_glue::spki;
@@ -226,6 +226,12 @@ pub trait TpmRS256 {
         key: &RS256Key,
         sealed_data: &SealedData,
     ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+
+    fn rs256_import(
+        &mut self,
+        parent_key: &StorageKey,
+        private_key: RS256PrivateKey,
+    ) -> Result<LoadableRS256Key, TpmError>;
 
     // oaep enc/dec
     fn rs256_oaep_enc(&mut self, rs256_key: &RS256Key, data: &[u8]) -> Result<Vec<u8>, TpmError> {

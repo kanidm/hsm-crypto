@@ -20,14 +20,10 @@
 mod authvalue;
 mod error;
 mod pin;
-pub mod structures;
 pub mod provider;
+pub mod structures;
 
-pub use {
-    authvalue::AuthValue,
-    error::TpmError,
-    pin::PinValue,
-};
+pub use {authvalue::AuthValue, error::TpmError, pin::PinValue};
 
 pub(crate) mod wrap;
 

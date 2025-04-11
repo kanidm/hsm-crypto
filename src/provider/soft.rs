@@ -396,31 +396,7 @@ impl TpmRS256 for SoftTpm {
             TpmError::RsaGenerate
         })?;
 
-        let cek_to_wrap = aes256::new_key();
-
-        match parent_key {
-            StorageKey::SoftAes256GcmV2 { key: parent_key } => {
-                let key_to_wrap_pkcs8 = key_to_wrap.to_pkcs8_der().map_err(|err| {
-                    error!(?err, "Unable to serialise RSA private key to der");
-                    TpmError::RsaPrivateToDer
-                })?;
-
-                let (enc_key, tag, nonce) =
-                    wrap_aes256gcm!(parent_key, key_to_wrap_pkcs8.to_bytes())?;
-
-                let (cek_enc, cek_tag, cek_nonce) = wrap_aes256gcm!(parent_key, cek_to_wrap)?;
-
-                Ok(LoadableRS256Key::SoftAes256GcmV2 {
-                    enc_key,
-                    tag,
-                    nonce,
-                    cek_enc,
-                    cek_tag,
-                    cek_nonce,
-                })
-            }
-            StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
-        }
+        self.rs256_import(parent_key, key_to_wrap)
     }
 
     fn rs256_load(
@@ -534,6 +510,38 @@ impl TpmRS256 for SoftTpm {
                     .map_err(|_| TpmError::RsaOaepDecrypt)
             }
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    fn rs256_import(
+        &mut self,
+        parent_key: &StorageKey,
+        key_to_import: RS256PrivateKey,
+    ) -> Result<LoadableRS256Key, TpmError> {
+        let cek_to_wrap = aes256::new_key();
+
+        match parent_key {
+            StorageKey::SoftAes256GcmV2 { key: parent_key } => {
+                let key_to_wrap_pkcs8 = key_to_import.to_pkcs8_der().map_err(|err| {
+                    error!(?err, "Unable to serialise RSA private key to der");
+                    TpmError::RsaPrivateToDer
+                })?;
+
+                let (enc_key, tag, nonce) =
+                    wrap_aes256gcm!(parent_key, key_to_wrap_pkcs8.to_bytes())?;
+
+                let (cek_enc, cek_tag, cek_nonce) = wrap_aes256gcm!(parent_key, cek_to_wrap)?;
+
+                Ok(LoadableRS256Key::SoftAes256GcmV2 {
+                    enc_key,
+                    tag,
+                    nonce,
+                    cek_enc,
+                    cek_tag,
+                    cek_nonce,
+                })
+            }
+            StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 

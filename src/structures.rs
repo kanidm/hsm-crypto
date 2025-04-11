@@ -1,7 +1,7 @@
 use crypto_glue::{
     aes256::Aes256Key,
     aes256gcm::{Aes256GcmNonce, Aes256GcmTag},
-    ecdsa_p256::{EcdsaP256PrivateKey, EcdsaP256FieldBytes},
+    ecdsa_p256::{EcdsaP256FieldBytes, EcdsaP256PrivateKey},
     hmac_s256::HmacSha256Key,
     rsa::RS256PrivateKey,
     zeroize::Zeroizing,

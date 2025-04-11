@@ -95,6 +95,7 @@ pub enum TpmError {
     TpmRs256OaepInvalidInputLength,
     TssRs256OaepDecrypt,
     TssRs256UnsealNotSupported,
+    TssRs256ImportNotSupported,
     TssRsaPublicFromComponents,
     TssKeyObjectAttributesInvalid,
     TssKeyAlgorithmInvalid,
