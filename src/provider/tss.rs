@@ -40,7 +40,7 @@ use crypto_glue::{
         EcdsaP256Signature,
     },
     hmac_s256::HmacSha256Output,
-    rsa::{self, RS256PublicKey, RS256Signature},
+    rsa::{self, RS256PrivateKey, RS256PublicKey, RS256Signature},
     s256::{Sha256, Sha256Output},
     traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
 };
@@ -1281,6 +1281,14 @@ impl TpmRS256 for TssTpm {
                     })
             },
         )
+    }
+
+    fn rs256_import(
+        &mut self,
+        parent_key: &StorageKey,
+        private_key: RS256PrivateKey,
+    ) -> Result<LoadableRS256Key, TpmError> {
+        Err(TpmError::TssRs256ImportNotSupported)
     }
 
     fn rs256_unseal_data(

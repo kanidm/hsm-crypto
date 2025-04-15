@@ -1,7 +1,7 @@
 use crypto_glue::{
     aes256::Aes256Key,
     aes256gcm::{Aes256GcmNonce, Aes256GcmTag},
-    ecdsa_p256::{EcdsaP256PrivateKey, EcdsaP256PrivateKeyFieldBytes},
+    ecdsa_p256::{EcdsaP256FieldBytes, EcdsaP256PrivateKey},
     hmac_s256::HmacSha256Key,
     rsa::RS256PrivateKey,
     zeroize::Zeroizing,
@@ -99,7 +99,7 @@ pub enum HmacS256Key {
 pub enum LoadableES256Key {
     SoftAes256GcmV2 {
         // This is the encrypted EcdsaP256PrivateKey
-        enc_key: EcdsaP256PrivateKeyFieldBytes,
+        enc_key: EcdsaP256FieldBytes,
         tag: Aes256GcmTag,
         nonce: Aes256GcmNonce,
     },
