@@ -40,7 +40,7 @@ use crypto_glue::{
         EcdsaP256Signature,
     },
     hmac_s256::HmacSha256Output,
-    rsa::{self, RS256PublicKey, RS256Signature},
+    rsa::{self, RS256PublicKey, RS256PrivateKey, RS256Signature},
     s256::{Sha256, Sha256Output},
     traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
 };
