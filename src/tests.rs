@@ -1,6 +1,6 @@
 use crate::authvalue::AuthValue;
 use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmPinHmacS256, TpmRS256};
 use crate::structures::StorageKey;
 use crypto_glue::ecdsa_p256::EcdsaP256PublicKey;
 use crypto_glue::ecdsa_p256::EcdsaP256Signature;
@@ -11,12 +11,12 @@ use crypto_glue::spki::der::Encode;
 use crypto_glue::spki::DynSignatureAlgorithmIdentifier;
 use crypto_glue::traits::*;
 use crypto_glue::x509;
-use crypto_glue::x509::Builder;
+use crypto_glue::x509::{Builder, X509Display};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tracing::trace;
 
-pub(crate) fn test_tpm_storage<T: Tpm>(mut tpm_a: T) {
+pub(crate) fn test_tpm_storage<T: Tpm + TpmHmacS256 + TpmPinHmacS256>(mut tpm_a: T) {
     let _ = tracing_subscriber::fmt::try_init();
 
     // Create a new random auth_value.
@@ -44,18 +44,32 @@ pub(crate) fn test_tpm_storage<T: Tpm>(mut tpm_a: T) {
         .storage_key_load(&root_storage_key, &loadable_child_storage_key)
         .expect("Unable to load child storage key.");
 
-    // Create and load a child storage key that requires an authValue as well.
+    // Hmacs are used for the pin to prevent length limits.
+    let loadable_hmac_key = tpm_a
+        .hmac_s256_create(&root_storage_key)
+        .expect("Unable to create hmac key");
 
-    let pin = PinValue::new("012345").expect("Invalid TPM pin");
+    let hmac_key = tpm_a
+        .hmac_s256_load(&root_storage_key, &loadable_hmac_key)
+        .expect("Unable to load hmac key");
+
+    // Create and load a child storage key that requires an authValue as well.
+    let pin = PinValue::new("looluG4ahyeisieN6Uyieth6TowithahSh1agh6uPh7uj1meigoe7ujaiGhaiga2")
+        .expect("Invalid TPM pin");
 
     let loadable_child_storage_key = tpm_a
-        .storage_key_create_pin(&root_storage_key, &pin)
+        .storage_key_create_pin_hmac_s256(&root_storage_key, &hmac_key, &pin)
         .expect("Unable to create child storage key.");
 
     trace!(?loadable_child_storage_key);
 
     let storage_key = tpm_a
-        .storage_key_load_pin(&root_storage_key, &pin, &loadable_child_storage_key)
+        .storage_key_load_pin_hmac_s256(
+            &root_storage_key,
+            &hmac_key,
+            &pin,
+            &loadable_child_storage_key,
+        )
         .expect("Unable to load child storage key.");
 
     let secret = Zeroizing::new(vec![0, 1, 2, 3, 4, 5, 6, 7]);
@@ -212,11 +226,7 @@ pub(crate) fn test_tpm_ecdsa_p256<T: Tpm + TpmES256>(mut tpm_a: T) {
 
     let cert = cert_builder.assemble(signature).unwrap();
 
-    let mut out = String::new();
-
-    x509::display::cert_to_string_pretty(&cert, &mut out).unwrap();
-
-    println!("{}", out);
+    println!("{}", X509Display::from(&cert));
 
     // Check the public keys are the same. Fuck me the rust crypto apis don't
     // make this easy at all .....
@@ -343,11 +353,7 @@ pub(crate) fn test_tpm_rs256<T: Tpm + TpmRS256>(mut tpm_a: T) {
 
     let cert = cert_builder.assemble(signature).unwrap();
 
-    let mut out = String::new();
-
-    x509::display::cert_to_string_pretty(&cert, &mut out).unwrap();
-
-    println!("{}", out);
+    println!("{}", X509Display::from(&cert));
 
     // Check the public keys are the same. Fuck me the rust crypto apis don't
     // make this easy at all .....
