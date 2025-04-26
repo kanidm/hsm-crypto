@@ -1,4 +1,25 @@
+use crate::authvalue::AuthValue;
+use crate::error::TpmError;
+use crate::pin::PinValue;
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmPinHmacS256, TpmRS256};
+use crate::structures::{
+    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
+    LoadableStorageKey, RS256Key, SealedData, StorageKey,
+};
+use crypto_glue::{
+    aes256,
+    aes256gcm::{self, AeadInPlace, Aes256Gcm, KeyInit},
+    ecdsa_p256::{
+        EcdsaP256PublicCoordinate, EcdsaP256PublicEncodedPoint, EcdsaP256PublicKey,
+        EcdsaP256Signature,
+    },
+    hmac_s256::HmacSha256Output,
+    rsa::{self, RS256PrivateKey, RS256PublicKey, RS256Signature},
+    s256::{Sha256, Sha256Output},
+    traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
+};
 use std::str::FromStr;
+use tracing::error;
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
@@ -12,7 +33,7 @@ use tss_esapi::interface_types::session_handles::AuthSession;
 use tss_esapi::structures::{Auth, Private, Public};
 use tss_esapi::structures::{
     CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccPoint, EccScheme, HashScheme,
-    HashcheckTicket, KeyedHashScheme, MaxBuffer, PublicBuilder, PublicEccParametersBuilder,
+    HashcheckTicket, KeyedHashScheme, MaxBuffer, Nonce, PublicBuilder, PublicEccParametersBuilder,
     PublicKeyRsa, PublicKeyedHashParameters, PublicRsaParametersBuilder, RsaDecryptionScheme,
     RsaExponent, RsaScheme, SensitiveData, Signature, SignatureScheme, SymmetricCipherParameters,
     SymmetricDefinition, SymmetricDefinitionObject,
@@ -21,29 +42,6 @@ use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
 use tss_esapi::utils::TpmsContext;
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
-
-use crate::authvalue::AuthValue;
-use crate::error::TpmError;
-use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
-use crate::structures::{
-    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
-    LoadableStorageKey, RS256Key, SealedData, StorageKey,
-};
-use tracing::error;
-
-use crypto_glue::{
-    aes256,
-    aes256gcm::{self, AeadInPlace, Aes256Gcm, KeyInit},
-    ecdsa_p256::{
-        EcdsaP256PublicCoordinate, EcdsaP256PublicEncodedPoint, EcdsaP256PublicKey,
-        EcdsaP256Signature,
-    },
-    hmac_s256::HmacSha256Output,
-    rsa::{self, RS256PrivateKey, RS256PublicKey, RS256Signature},
-    s256::{Sha256, Sha256Output},
-    traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
-};
 
 use crate::wrap::{unwrap_aes256gcm, wrap_aes256gcm};
 
@@ -71,11 +69,25 @@ impl TssTpm {
             TpmError::TssContextCreate
         })?;
 
+        let key = None;
+        let bind = None;
+
+        // As we have a long lived session with the tpm, the introduction of our own
+        // nonce helps to prevent attacks against authValues.
+        let nonce = tpm_ctx
+            .get_random(32)
+            .and_then(|random| Nonce::from_bytes(random.as_slice()))
+            .map(Some)
+            .map_err(|tpm_err| {
+                error!(?tpm_err);
+                TpmError::TssEntropy
+            })?;
+
         let maybe_auth_session = tpm_ctx
             .start_auth_session(
-                None,
-                None,
-                None,
+                key,
+                bind,
+                nonce,
                 SessionType::Hmac,
                 SymmetricDefinition::AES_128_CFB,
                 HashingAlgorithm::Sha256,
@@ -479,141 +491,6 @@ impl Tpm for TssTpm {
             .map(|key_context| StorageKey::Tpm { key_context })
     }
 
-    // Create a storage key that has a pin value to protect it.
-    fn storage_key_create_pin(
-        &mut self,
-        parent_key: &StorageKey,
-        pin: &PinValue,
-    ) -> Result<LoadableStorageKey, TpmError> {
-        let storage_key_context = match parent_key {
-            StorageKey::Tpm { key_context } => key_context.clone(),
-            _ => return Err(TpmError::IncorrectKeyType),
-        };
-
-        let tpm_auth_value = Auth::from_bytes(pin.value()).map_err(|tpm_err| {
-            error!(?tpm_err);
-            TpmError::TssAuthValueInvalid
-        })?;
-
-        self.execute_with_temporary_object_context(
-            storage_key_context,
-            |hsm_ctx, parent_key_handle| {
-                let (private, public) =
-                    hsm_ctx.create_storage_key(Some(tpm_auth_value.clone()), parent_key_handle)?;
-
-                // Now do a temporary load and create for the storage key.
-                let key_handle = hsm_ctx
-                    .tpm_ctx
-                    .load(parent_key_handle.into(), private.clone(), public.clone())
-                    .map_err(|tpm_err| {
-                        error!(?tpm_err);
-                        TpmError::TssStorageKeyLoad
-                    })?;
-
-                // Now it's loaded, create the machine storage key
-                let (sk_private, sk_public) = hsm_ctx.execute_with_temporary_object(
-                    key_handle.into(),
-                    |hsm_ctx, parent_key_handle| {
-                        hsm_ctx
-                            .tpm_ctx
-                            .tr_set_auth(parent_key_handle, tpm_auth_value)
-                            .map_err(|tpm_err| {
-                                error!(?tpm_err);
-                                TpmError::TssStorageKeyLoad
-                            })?;
-
-                        hsm_ctx.create_storage_key(None, parent_key_handle)
-                    },
-                )?;
-
-                Ok(LoadableStorageKey::TpmAes128CfbV1 {
-                    private: Some(private),
-                    public: Some(public),
-                    sk_private,
-                    sk_public,
-                })
-            },
-        )
-    }
-
-    fn storage_key_load_pin(
-        &mut self,
-        parent_key: &StorageKey,
-        pin: &PinValue,
-        lsk: &LoadableStorageKey,
-    ) -> Result<StorageKey, TpmError> {
-        let storage_key_context = match parent_key {
-            StorageKey::Tpm { key_context } => key_context.clone(),
-            _ => return Err(TpmError::IncorrectKeyType),
-        };
-
-        let LoadableStorageKey::TpmAes128CfbV1 {
-            private: Some(private),
-            public: Some(public),
-            sk_private,
-            sk_public,
-        } = lsk
-        else {
-            return Err(TpmError::IncorrectKeyType);
-        };
-
-        let tpm_auth_value = Auth::from_bytes(pin.value()).map_err(|tpm_err| {
-            error!(?tpm_err);
-            TpmError::TssAuthValueInvalid
-        })?;
-
-        let auth_parent_key_handle = self.execute_with_temporary_object_context(
-            storage_key_context,
-            |hsm_ctx, parent_key_handle| {
-                hsm_ctx
-                    .tpm_ctx
-                    .load(parent_key_handle.into(), private.clone(), public.clone())
-                    .map_err(|tpm_err| {
-                        error!(?tpm_err);
-                        TpmError::TssStorageKeyLoad
-                    })
-            },
-        )?;
-
-        // At the end of this fn, root_key_handle is unloaded and our storage key
-        // handle is ready to rock.
-        let key_handle = self.execute_with_temporary_object(
-            auth_parent_key_handle.into(),
-            |hsm_ctx, auth_parent_key_handle| {
-                hsm_ctx
-                    .tpm_ctx
-                    .tr_set_auth(auth_parent_key_handle, tpm_auth_value.clone())
-                    .map_err(|tpm_err| {
-                        error!(?tpm_err);
-                        TpmError::TssStorageKeyLoad
-                    })?;
-
-                hsm_ctx
-                    .tpm_ctx
-                    .load(
-                        auth_parent_key_handle.into(),
-                        sk_private.clone(),
-                        sk_public.clone(),
-                    )
-                    .map_err(|tpm_err| {
-                        error!(?tpm_err);
-                        TpmError::TssStorageKeyLoad
-                    })
-            },
-        )?;
-
-        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, key_handle| {
-            hsm_ctx
-                .tpm_ctx
-                .context_save(key_handle)
-                .map(|key_context| StorageKey::Tpm { key_context })
-                .map_err(|tpm_err| {
-                    error!(?tpm_err);
-                    TpmError::TssStorageKeyLoad
-                })
-        })
-    }
-
     fn seal_data(
         &mut self,
         key: &StorageKey,
@@ -862,6 +739,150 @@ impl TpmHmacS256 for TssTpm {
             .ok_or(TpmError::TssHmacOutputInvalid)?;
 
         Ok(HmacSha256Output::from(hmac_output))
+    }
+}
+
+impl TpmPinHmacS256 for TssTpm {
+    fn storage_key_create_pin_hmac_s256(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &HmacS256Key,
+        pin: &PinValue,
+    ) -> Result<LoadableStorageKey, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let hmac_output = self.hmac_s256(hmac_key, pin.value())?;
+        let hmac_output = hmac_output.into_bytes();
+
+        let tpm_auth_value = Auth::from_bytes(hmac_output.as_slice()).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssAuthValueInvalid
+        })?;
+
+        self.execute_with_temporary_object_context(
+            storage_key_context,
+            |hsm_ctx, parent_key_handle| {
+                let (private, public) =
+                    hsm_ctx.create_storage_key(Some(tpm_auth_value.clone()), parent_key_handle)?;
+
+                // Now do a temporary load and create for the storage key.
+                let key_handle = hsm_ctx
+                    .tpm_ctx
+                    .load(parent_key_handle.into(), private.clone(), public.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssStorageKeyLoad
+                    })?;
+
+                // Now it's loaded, create the machine storage key
+                let (sk_private, sk_public) = hsm_ctx.execute_with_temporary_object(
+                    key_handle.into(),
+                    |hsm_ctx, parent_key_handle| {
+                        hsm_ctx
+                            .tpm_ctx
+                            .tr_set_auth(parent_key_handle, tpm_auth_value)
+                            .map_err(|tpm_err| {
+                                error!(?tpm_err);
+                                TpmError::TssStorageKeyLoad
+                            })?;
+
+                        hsm_ctx.create_storage_key(None, parent_key_handle)
+                    },
+                )?;
+
+                Ok(LoadableStorageKey::TpmAes128CfbV1 {
+                    private: Some(private),
+                    public: Some(public),
+                    sk_private,
+                    sk_public,
+                })
+            },
+        )
+    }
+
+    fn storage_key_load_pin_hmac_s256(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &HmacS256Key,
+        pin: &PinValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError> {
+        let storage_key_context = match parent_key {
+            StorageKey::Tpm { key_context } => key_context.clone(),
+            _ => return Err(TpmError::IncorrectKeyType),
+        };
+
+        let LoadableStorageKey::TpmAes128CfbV1 {
+            private: Some(private),
+            public: Some(public),
+            sk_private,
+            sk_public,
+        } = lsk
+        else {
+            return Err(TpmError::IncorrectKeyType);
+        };
+
+        let hmac_output = self.hmac_s256(hmac_key, pin.value())?;
+        let hmac_output = hmac_output.into_bytes();
+
+        let tpm_auth_value = Auth::from_bytes(hmac_output.as_slice()).map_err(|tpm_err| {
+            error!(?tpm_err);
+            TpmError::TssAuthValueInvalid
+        })?;
+
+        let auth_parent_key_handle = self.execute_with_temporary_object_context(
+            storage_key_context,
+            |hsm_ctx, parent_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .load(parent_key_handle.into(), private.clone(), public.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssStorageKeyLoad
+                    })
+            },
+        )?;
+
+        // At the end of this fn, root_key_handle is unloaded and our storage key
+        // handle is ready to rock.
+        let key_handle = self.execute_with_temporary_object(
+            auth_parent_key_handle.into(),
+            |hsm_ctx, auth_parent_key_handle| {
+                hsm_ctx
+                    .tpm_ctx
+                    .tr_set_auth(auth_parent_key_handle, tpm_auth_value.clone())
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssStorageKeyLoad
+                    })?;
+
+                hsm_ctx
+                    .tpm_ctx
+                    .load(
+                        auth_parent_key_handle.into(),
+                        sk_private.clone(),
+                        sk_public.clone(),
+                    )
+                    .map_err(|tpm_err| {
+                        error!(?tpm_err);
+                        TpmError::TssStorageKeyLoad
+                    })
+            },
+        )?;
+
+        self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, key_handle| {
+            hsm_ctx
+                .tpm_ctx
+                .context_save(key_handle)
+                .map(|key_context| StorageKey::Tpm { key_context })
+                .map_err(|tpm_err| {
+                    error!(?tpm_err);
+                    TpmError::TssStorageKeyLoad
+                })
+        })
     }
 }
 

@@ -47,19 +47,6 @@ pub trait Tpm {
         lsk: &LoadableStorageKey,
     ) -> Result<StorageKey, TpmError>;
 
-    fn storage_key_create_pin(
-        &mut self,
-        parent_key: &StorageKey,
-        pin: &PinValue,
-    ) -> Result<LoadableStorageKey, TpmError>;
-
-    fn storage_key_load_pin(
-        &mut self,
-        parent_key: &StorageKey,
-        pin: &PinValue,
-        lsk: &LoadableStorageKey,
-    ) -> Result<StorageKey, TpmError>;
-
     fn seal_data(
         &mut self,
         key: &StorageKey,
@@ -90,6 +77,23 @@ pub trait TpmHmacS256 {
         hmac_key: &HmacS256Key,
         data: &[u8],
     ) -> Result<HmacSha256Output, TpmError>;
+}
+
+pub trait TpmPinHmacS256: Tpm + TpmHmacS256 {
+    fn storage_key_create_pin_hmac_s256(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &HmacS256Key,
+        pin: &PinValue,
+    ) -> Result<LoadableStorageKey, TpmError>;
+
+    fn storage_key_load_pin_hmac_s256(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &HmacS256Key,
+        pin: &PinValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError>;
 }
 
 pub struct TpmES256Keypair {

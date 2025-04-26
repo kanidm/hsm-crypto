@@ -1,12 +1,12 @@
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmPinHmacS256, TpmRS256};
 use crate::structures::{
     ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
     LoadableStorageKey, RS256Key, SealedData, StorageKey,
 };
-
+use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 use crypto_glue::{
     aes256::{self},
     aes256gcm::{
@@ -22,8 +22,6 @@ use crypto_glue::{
     traits::*,
 };
 use tracing::error;
-
-use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 
 #[derive(Default)]
 pub struct SoftTpm {}
@@ -130,69 +128,6 @@ impl Tpm for SoftTpm {
                     aes256::key_from_vec(key.to_vec()).ok_or(TpmError::Aes256KeyInvalid)
                 })
                 .map(|key| StorageKey::SoftAes256GcmV2 { key }),
-            (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) | (StorageKey::Tpm { .. }, _) => {
-                Err(TpmError::IncorrectKeyType)
-            }
-        }
-    }
-
-    // Create a storage key that has a pin value to protect it.
-    fn storage_key_create_pin(
-        &mut self,
-        parent_key: &StorageKey,
-        pin: &PinValue,
-    ) -> Result<LoadableStorageKey, TpmError> {
-        let key_to_wrap = aes256::new_key();
-
-        match parent_key {
-            StorageKey::SoftAes256GcmV2 { key: parent_key } => {
-                let wrapping_key = pin.derive_aes_256(parent_key)?;
-                wrap_aes256gcm!(&wrapping_key, key_to_wrap).map(|(enc_key, tag, nonce)| {
-                    LoadableStorageKey::SoftAes256GcmV2 {
-                        enc_key,
-                        tag,
-                        nonce,
-                    }
-                })
-            }
-            StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
-        }
-    }
-
-    fn storage_key_load_pin(
-        &mut self,
-        parent_key: &StorageKey,
-        pin: &PinValue,
-        lsk: &LoadableStorageKey,
-    ) -> Result<StorageKey, TpmError> {
-        match (parent_key, lsk) {
-            (
-                StorageKey::SoftAes256GcmV2 { key: parent_key },
-                LoadableStorageKey::SoftAes256GcmV2 {
-                    enc_key,
-                    tag,
-                    nonce,
-                },
-            ) => {
-                let wrapping_key = pin.derive_aes_256(parent_key)?;
-                unwrap_aes256gcm!(&wrapping_key, enc_key, tag, nonce)
-                    .map(|key| StorageKey::SoftAes256GcmV2 { key })
-            }
-            (
-                StorageKey::SoftAes256GcmV2 { key: parent_key },
-                LoadableStorageKey::SoftAes256GcmV1 {
-                    key: key_to_unwrap,
-                    tag,
-                    iv,
-                },
-            ) => {
-                let wrapping_key = pin.derive_aes_256(parent_key)?;
-                unwrap_aes256gcm_nonce16!(&wrapping_key, key_to_unwrap, tag, iv)
-                    .and_then(|key| {
-                        aes256::key_from_vec(key.to_vec()).ok_or(TpmError::Aes256KeyInvalid)
-                    })
-                    .map(|key| StorageKey::SoftAes256GcmV2 { key })
-            }
             (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) | (StorageKey::Tpm { .. }, _) => {
                 Err(TpmError::IncorrectKeyType)
             }
@@ -313,6 +248,74 @@ impl TpmHmacS256 for SoftTpm {
         match hmac_key {
             HmacS256Key::SoftAes256GcmV2 { key } => Ok(hmac_s256::oneshot(key, data)),
             HmacS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
+        }
+    }
+}
+
+impl TpmPinHmacS256 for SoftTpm {
+    fn storage_key_create_pin_hmac_s256(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &HmacS256Key,
+        pin: &PinValue,
+    ) -> Result<LoadableStorageKey, TpmError> {
+        let key_to_wrap = aes256::new_key();
+
+        match parent_key {
+            StorageKey::SoftAes256GcmV2 { key: parent_key } => {
+                let hmac_output = self.hmac_s256(hmac_key, pin.value())?;
+                let wrapping_key = pin.derive_hmac_s256_aes_256(hmac_output, parent_key)?;
+                wrap_aes256gcm!(&wrapping_key, key_to_wrap).map(|(enc_key, tag, nonce)| {
+                    LoadableStorageKey::SoftAes256GcmV2 {
+                        enc_key,
+                        tag,
+                        nonce,
+                    }
+                })
+            }
+            StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    fn storage_key_load_pin_hmac_s256(
+        &mut self,
+        parent_key: &StorageKey,
+        hmac_key: &HmacS256Key,
+        pin: &PinValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError> {
+        match (parent_key, lsk) {
+            (
+                StorageKey::SoftAes256GcmV2 { key: parent_key },
+                LoadableStorageKey::SoftAes256GcmV2 {
+                    enc_key,
+                    tag,
+                    nonce,
+                },
+            ) => {
+                let hmac_output = self.hmac_s256(hmac_key, pin.value())?;
+                let wrapping_key = pin.derive_hmac_s256_aes_256(hmac_output, parent_key)?;
+                unwrap_aes256gcm!(&wrapping_key, enc_key, tag, nonce)
+                    .map(|key| StorageKey::SoftAes256GcmV2 { key })
+            }
+            (
+                StorageKey::SoftAes256GcmV2 { key: parent_key },
+                LoadableStorageKey::SoftAes256GcmV1 {
+                    key: key_to_unwrap,
+                    tag,
+                    iv,
+                },
+            ) => {
+                let wrapping_key = pin.derive_aes_256(parent_key)?;
+                unwrap_aes256gcm_nonce16!(&wrapping_key, key_to_unwrap, tag, iv)
+                    .and_then(|key| {
+                        aes256::key_from_vec(key.to_vec()).ok_or(TpmError::Aes256KeyInvalid)
+                    })
+                    .map(|key| StorageKey::SoftAes256GcmV2 { key })
+            }
+            (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) | (StorageKey::Tpm { .. }, _) => {
+                Err(TpmError::IncorrectKeyType)
+            }
         }
     }
 }
