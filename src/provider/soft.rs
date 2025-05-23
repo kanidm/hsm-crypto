@@ -3,9 +3,10 @@ use crate::error::TpmError;
 use crate::pin::PinValue;
 use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
 use crate::structures::{
-    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key,
-    LoadableRS256Key, LoadableStorageKey, LoadableMsHelloKey, RS256Key, SealedData, StorageKey,
+    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableMsHelloKey,
+    LoadableRS256Key, LoadableStorageKey, RS256Key, SealedData, StorageKey,
 };
+use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 use crypto_glue::{
     aes256::{self},
     aes256gcm::{
@@ -18,11 +19,10 @@ use crypto_glue::{
     hmac_s256::{self, HmacSha256Output},
     rsa::{self, RS256Digest, RS256PrivateKey, RS256PublicKey, RS256Signature, RS256SigningKey},
     s256, sha1,
-    x509::Certificate,
     traits::*,
+    x509::Certificate,
 };
 use tracing::error;
-use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 
 #[derive(Default)]
 pub struct SoftTpm {}
@@ -463,9 +463,9 @@ impl TpmRS256 for SoftTpm {
 
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
         match rs256_key {
-            RS256Key::SoftAes256GcmV2Cek { key, .. } |
-            RS256Key::SoftAes256GcmV2 { key }
-            => Ok(RS256PublicKey::from(key.as_ref())),
+            RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
+                Ok(RS256PublicKey::from(key.as_ref()))
+            }
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
@@ -476,9 +476,7 @@ impl TpmRS256 for SoftTpm {
         data: &[u8],
     ) -> Result<RS256Signature, TpmError> {
         match rs256_key {
-            RS256Key::SoftAes256GcmV2Cek { key, .. } |
-            RS256Key::SoftAes256GcmV2 { key }
-            => {
+            RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
                 let mut digest = RS256Digest::new();
                 digest.update(data);
 
@@ -498,9 +496,7 @@ impl TpmRS256 for SoftTpm {
         encrypted_data: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
         match rs256_key {
-            RS256Key::SoftAes256GcmV2Cek { key, .. } |
-            RS256Key::SoftAes256GcmV2 { key }
-            => {
+            RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
                 let padding = rsa::Oaep::new::<s256::Sha256>();
                 key.decrypt(padding, encrypted_data)
                     .map_err(|_| TpmError::RsaOaepDecrypt)
@@ -554,9 +550,7 @@ impl TpmMsExtensions for SoftTpm {
         encrypted_data: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
         match rs256_key {
-            RS256Key::SoftAes256GcmV2Cek { key, .. } |
-            RS256Key::SoftAes256GcmV2 { key }
-            => {
+            RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
                 let padding = rsa::Oaep::new::<sha1::Sha1>();
                 key.decrypt(padding, encrypted_data)
                     .map(|data| data.into())
@@ -603,11 +597,10 @@ impl TpmMsExtensions for SoftTpm {
                         })
                     })?;
 
-                let cert = Certificate::from_der(x509)
-                    .map_err(|err| {
-                        error!(?err, "Unable to parse x509 certificate der");
-                        TpmError::X509FromDer
-                    })?;
+                let cert = Certificate::from_der(x509).map_err(|err| {
+                    error!(?err, "Unable to parse x509 certificate der");
+                    TpmError::X509FromDer
+                })?;
 
                 // Box the rsa key
                 let key = Box::new(key);
@@ -619,8 +612,7 @@ impl TpmMsExtensions for SoftTpm {
                 ))
             }
             // (_, LoadableMsHelloKey::TpmAes128CfbV1 { .. }) |
-            (StorageKey::Tpm { .. }, _)
-            => Err(TpmError::IncorrectKeyType),
+            (StorageKey::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
         }
     }
 }
@@ -929,9 +921,7 @@ mod tests {
         assert_eq!(ms_oapxbc_public_der, public_der);
 
         #[allow(deprecated)]
-        let yielded_cek = soft_tpm
-            .rs256_yield_cek(&ms_oapxbc_key)
-            .unwrap();
+        let yielded_cek = soft_tpm.rs256_yield_cek(&ms_oapxbc_key).unwrap();
 
         let yielded_secret_a = soft_tpm
             .unseal_data(&yielded_cek, &loadable_session_key)

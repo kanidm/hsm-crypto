@@ -12,6 +12,7 @@ use crypto_glue::spki::DynSignatureAlgorithmIdentifier;
 use crypto_glue::traits::*;
 use crypto_glue::x509;
 use crypto_glue::x509::Builder;
+use crypto_glue::x509::X509Display;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tracing::trace;
@@ -212,11 +213,7 @@ pub(crate) fn test_tpm_ecdsa_p256<T: Tpm + TpmES256>(mut tpm_a: T) {
 
     let cert = cert_builder.assemble(signature).unwrap();
 
-    let mut out = String::new();
-
-    x509::display::cert_to_string_pretty(&cert, &mut out).unwrap();
-
-    println!("{}", out);
+    println!("{}", X509Display::from(&cert));
 
     // Check the public keys are the same. Fuck me the rust crypto apis don't
     // make this easy at all .....
@@ -343,11 +340,7 @@ pub(crate) fn test_tpm_rs256<T: Tpm + TpmRS256>(mut tpm_a: T) {
 
     let cert = cert_builder.assemble(signature).unwrap();
 
-    let mut out = String::new();
-
-    x509::display::cert_to_string_pretty(&cert, &mut out).unwrap();
-
-    println!("{}", out);
+    println!("{}", X509Display::from(&cert));
 
     // Check the public keys are the same. Fuck me the rust crypto apis don't
     // make this easy at all .....

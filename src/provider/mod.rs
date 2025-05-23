@@ -1,12 +1,12 @@
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
+use crate::structures::LoadableMsHelloKey;
 use crate::structures::SealedData;
 use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
 use crate::structures::{LoadableRS256Key, RS256Key};
 use crate::structures::{LoadableStorageKey, StorageKey};
-use crate::structures::{LoadableMsHelloKey};
 use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
 use crypto_glue::hmac_s256::HmacSha256Output;
 use crypto_glue::rand;
@@ -351,12 +351,5 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         parent_key: &StorageKey,
         ms_hello_key: &LoadableMsHelloKey,
         pin: &PinValue,
-    ) -> Result<
-        (
-            RS256Key,
-            Certificate,
-            StorageKey,
-        ),
-        TpmError,
-    >;
+    ) -> Result<(RS256Key, Certificate, StorageKey), TpmError>;
 }

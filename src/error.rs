@@ -41,7 +41,6 @@ pub enum TpmError {
     RsaOaepDecrypt,
     // RsaToPrivateKey,
     // RsaPublicFromComponents,
-
     X509FromDer,
     // X509PublicKey,
     // X509KeyMismatch,
