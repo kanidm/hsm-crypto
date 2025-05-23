@@ -205,6 +205,6 @@ pub enum LoadableMsHelloKey {
         key: Vec<u8>,
         tag: [u8; 16],
         iv: [u8; 16],
-        x509: Vec<u8>,
+        // x509: Vec<u8>,
     },
 }

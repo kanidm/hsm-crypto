@@ -560,6 +560,18 @@ impl TpmMsExtensions for SoftTpm {
         }
     }
 
+    /*
+    fn ms_hello_key_associate_certificate(
+        &mut self,
+        parent_key: &StorageKey,
+        ms_hello_key: &LoadableMsHelloKey,
+        pin: &PinValue,
+        certificate: &Certificate,
+    ) -> Result<LoadableMsHelloKey, TpmError> {
+        // let (rskey, 
+    }
+    */
+
     fn ms_hello_key_load(
         &mut self,
         parent_key: &StorageKey,
@@ -569,14 +581,13 @@ impl TpmMsExtensions for SoftTpm {
         (
             // MsHelloKey,
             RS256Key,
-            Certificate,
+            // Certificate,
             StorageKey,
         ),
         TpmError,
     > {
         // What to do about the x509? Cert - should it split out here? Or stay with the
         // Hello key? Could this be tied to enrollment? Need to chat to David about this ...
-
         match (parent_key, ms_hello_key) {
             (
                 StorageKey::SoftAes256GcmV2 { key: parent_key },
@@ -584,7 +595,7 @@ impl TpmMsExtensions for SoftTpm {
                     key: key_to_unwrap,
                     tag,
                     iv,
-                    x509,
+                    x509: _,
                 },
             ) => {
                 let wrapping_key = pin.derive_aes_256(parent_key)?;
@@ -597,10 +608,12 @@ impl TpmMsExtensions for SoftTpm {
                         })
                     })?;
 
+                /*
                 let cert = Certificate::from_der(x509).map_err(|err| {
                     error!(?err, "Unable to parse x509 certificate der");
                     TpmError::X509FromDer
                 })?;
+                */
 
                 // Box the rsa key
                 let key = Box::new(key);

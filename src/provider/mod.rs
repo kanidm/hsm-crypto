@@ -338,6 +338,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 
+
     /*
     fn ms_hello_key_create(
         &mut self,
@@ -351,5 +352,5 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         parent_key: &StorageKey,
         ms_hello_key: &LoadableMsHelloKey,
         pin: &PinValue,
-    ) -> Result<(RS256Key, Certificate, StorageKey), TpmError>;
+    ) -> Result<(RS256Key, StorageKey), TpmError>;
 }
