@@ -42,7 +42,7 @@ pub enum TpmError {
     // RsaToPrivateKey,
     // RsaPublicFromComponents,
 
-    // X509FromDer,
+    X509FromDer,
     // X509PublicKey,
     // X509KeyMismatch,
     // X509RequestBuilder,

@@ -137,9 +137,6 @@ pub enum LoadableRS256Key {
         enc_key: Zeroizing<Vec<u8>>,
         tag: Aes256GcmTag,
         nonce: Aes256GcmNonce,
-        cek_enc: Aes256Key,
-        cek_tag: Aes256GcmTag,
-        cek_nonce: Aes256GcmNonce,
     },
     #[cfg(feature = "tpm")]
     TpmV1 {
@@ -155,12 +152,19 @@ pub type LoadableMsOapxbcRsaKey = LoadableRS256Key;
 pub enum RS256Key {
     SoftAes256GcmV2 {
         key: Box<RS256PrivateKey>,
+    },
+    SoftAes256GcmV2Cek {
+        key: Box<RS256PrivateKey>,
         content_encryption_key: Aes256Key,
     },
     #[cfg(feature = "tpm")]
-    Tpm { key_context: TpmsContext },
+    Tpm {
+        key_context: TpmsContext,
+    },
     #[cfg(not(feature = "tpm"))]
-    Tpm { key_context: () },
+    Tpm {
+        key_context: (),
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,3 +199,12 @@ pub enum SealedData {
 }
 
 pub type LoadableMsOapxbcSessionKey = SealedData;
+
+pub enum LoadableMsHelloKey {
+    Soft2048V1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+        x509: Vec<u8>,
+    },
+}

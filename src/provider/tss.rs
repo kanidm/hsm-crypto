@@ -1290,14 +1290,6 @@ impl TpmRS256 for TssTpm {
     ) -> Result<LoadableRS256Key, TpmError> {
         Err(TpmError::TssRs256ImportNotSupported)
     }
-
-    fn rs256_unseal_data(
-        &mut self,
-        _key: &RS256Key,
-        _sealed_data: &SealedData,
-    ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
-        Err(TpmError::TssRs256UnsealNotSupported)
-    }
 }
 
 impl TpmMsExtensions for TssTpm {

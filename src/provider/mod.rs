@@ -6,6 +6,7 @@ use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
 use crate::structures::{LoadableRS256Key, RS256Key};
 use crate::structures::{LoadableStorageKey, StorageKey};
+use crate::structures::{LoadableMsHelloKey};
 use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
 use crypto_glue::hmac_s256::HmacSha256Output;
 use crypto_glue::rand;
@@ -14,7 +15,7 @@ use crypto_glue::s256::{self, Sha256Output};
 use crypto_glue::sha1;
 use crypto_glue::spki;
 use crypto_glue::traits::*;
-use crypto_glue::x509::BitString;
+use crypto_glue::x509::{BitString, Certificate};
 
 mod soft;
 pub use self::soft::SoftTpm;
@@ -221,11 +222,9 @@ pub trait TpmRS256 {
         since = "0.3.0",
         note = "RS256 Keys no longer have associated content encryption keys - use storage keys instead"
     )]
-    fn rs256_unseal_data(
-        &mut self,
-        key: &RS256Key,
-        sealed_data: &SealedData,
-    ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+    fn rs256_yield_cek(&mut self, _key: &RS256Key) -> Option<StorageKey> {
+        None
+    }
 
     fn rs256_import(
         &mut self,
@@ -338,4 +337,26 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
             .encrypt(&mut rng, padding, input)
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
+
+    /*
+    fn ms_hello_key_create(
+        &mut self,
+    ) -> Result<(), TpmError> {
+        todo!();
+    }
+    */
+
+    fn ms_hello_key_load(
+        &mut self,
+        parent_key: &StorageKey,
+        ms_hello_key: &LoadableMsHelloKey,
+        pin: &PinValue,
+    ) -> Result<
+        (
+            RS256Key,
+            Certificate,
+            StorageKey,
+        ),
+        TpmError,
+    >;
 }
