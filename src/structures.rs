@@ -59,6 +59,7 @@ pub enum StorageKey {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableHmacS256Key {
     SoftSha256V1 {
         key: Zeroizing<Vec<u8>>,
@@ -96,6 +97,7 @@ pub enum HmacS256Key {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableES256Key {
     SoftAes256GcmV2 {
         // This is the encrypted EcdsaP256PrivateKey
@@ -126,12 +128,18 @@ pub enum ES256Key {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableRS256Key {
     Soft2048V1 {
         key: Vec<u8>,
         tag: [u8; 16],
         iv: [u8; 16],
         cek: Vec<u8>,
+    },
+    Soft2048V2 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
     },
     SoftAes256GcmV2 {
         enc_key: Zeroizing<Vec<u8>>,
@@ -200,11 +208,34 @@ pub enum SealedData {
 
 pub type LoadableMsOapxbcSessionKey = SealedData;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableMsHelloKey {
-    Soft2048V1 {
+    SoftRsa2048V1 {
         key: Vec<u8>,
         tag: [u8; 16],
         iv: [u8; 16],
         // x509: Vec<u8>,
+    },
+    Rsa2048V1 {
+        loadable_storage_key: LoadableStorageKey,
+        loadable_rs256_key: LoadableRS256Key,
+    },
+}
+
+pub struct MsInProgressEnrolment {
+    pub(crate) loadable_rs256_key: LoadableRS256Key,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoadableMsDeviceEnrolmentKey {
+    SoftRsa2048V1 {
+        key: Vec<u8>,
+        tag: [u8; 16],
+        iv: [u8; 16],
+        x509: Vec<u8>,
+    },
+    Rsa2048V1 {
+        loadable_rs256_key: LoadableRS256Key,
+        x509_der: Vec<u8>,
     },
 }

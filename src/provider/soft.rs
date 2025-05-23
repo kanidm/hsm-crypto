@@ -3,8 +3,8 @@ use crate::error::TpmError;
 use crate::pin::PinValue;
 use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
 use crate::structures::{
-    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableMsHelloKey,
-    LoadableRS256Key, LoadableStorageKey, RS256Key, SealedData, StorageKey,
+    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
+    LoadableStorageKey, RS256Key, SealedData, StorageKey,
 };
 use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 use crypto_glue::{
@@ -18,9 +18,10 @@ use crypto_glue::{
     },
     hmac_s256::{self, HmacSha256Output},
     rsa::{self, RS256Digest, RS256PrivateKey, RS256PublicKey, RS256Signature, RS256SigningKey},
-    s256, sha1,
+    s256,
+    sha1,
     traits::*,
-    x509::Certificate,
+    // x509::Certificate,
 };
 use tracing::error;
 
@@ -455,6 +456,27 @@ impl TpmRS256 for SoftTpm {
                     content_encryption_key,
                 })
             }
+            (
+                StorageKey::SoftAes256GcmV2 { key: parent_key },
+                LoadableRS256Key::Soft2048V2 {
+                    key: key_to_unwrap,
+                    tag,
+                    iv,
+                },
+            ) => {
+                let key = unwrap_aes256gcm_nonce16!(parent_key, key_to_unwrap, tag, iv).and_then(
+                    |pkcs1_bytes| {
+                        RS256PrivateKey::from_pkcs1_der(&pkcs1_bytes).map_err(|err| {
+                            error!(?err, "rsa private from der");
+                            TpmError::RsaPrivateFromDer
+                        })
+                    },
+                )?;
+
+                let key = Box::new(key);
+
+                Ok(RS256Key::SoftAes256GcmV2 { key })
+            }
             (StorageKey::Tpm { .. }, _) | (_, LoadableRS256Key::TpmV1 { .. }) => {
                 Err(TpmError::IncorrectKeyType)
             }
@@ -559,45 +581,18 @@ impl TpmMsExtensions for SoftTpm {
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
+}
 
-    /*
-    fn ms_hello_key_associate_certificate(
-        &mut self,
+impl SoftTpm {
+    pub(crate) fn ms_hello_key_load_legacy(
         parent_key: &StorageKey,
-        ms_hello_key: &LoadableMsHelloKey,
         pin: &PinValue,
-        certificate: &Certificate,
-    ) -> Result<LoadableMsHelloKey, TpmError> {
-        // let (rskey, 
-    }
-    */
-
-    fn ms_hello_key_load(
-        &mut self,
-        parent_key: &StorageKey,
-        ms_hello_key: &LoadableMsHelloKey,
-        pin: &PinValue,
-    ) -> Result<
-        (
-            // MsHelloKey,
-            RS256Key,
-            // Certificate,
-            StorageKey,
-        ),
-        TpmError,
-    > {
-        // What to do about the x509? Cert - should it split out here? Or stay with the
-        // Hello key? Could this be tied to enrollment? Need to chat to David about this ...
-        match (parent_key, ms_hello_key) {
-            (
-                StorageKey::SoftAes256GcmV2 { key: parent_key },
-                LoadableMsHelloKey::Soft2048V1 {
-                    key: key_to_unwrap,
-                    tag,
-                    iv,
-                    x509: _,
-                },
-            ) => {
+        key_to_unwrap: &Vec<u8>,
+        tag: &[u8],
+        iv: &[u8],
+    ) -> Result<(RS256Key, StorageKey), TpmError> {
+        match parent_key {
+            StorageKey::SoftAes256GcmV2 { key: parent_key } => {
                 let wrapping_key = pin.derive_aes_256(parent_key)?;
 
                 let key = unwrap_aes256gcm_nonce16!(&wrapping_key, key_to_unwrap, tag, iv)
@@ -608,24 +603,15 @@ impl TpmMsExtensions for SoftTpm {
                         })
                     })?;
 
-                /*
-                let cert = Certificate::from_der(x509).map_err(|err| {
-                    error!(?err, "Unable to parse x509 certificate der");
-                    TpmError::X509FromDer
-                })?;
-                */
-
                 // Box the rsa key
                 let key = Box::new(key);
 
                 Ok((
                     RS256Key::SoftAes256GcmV2 { key },
-                    cert,
                     StorageKey::SoftAes256GcmV2 { key: wrapping_key },
                 ))
             }
-            // (_, LoadableMsHelloKey::TpmAes128CfbV1 { .. }) |
-            (StorageKey::Tpm { .. }, _) => Err(TpmError::IncorrectKeyType),
+            StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
 }

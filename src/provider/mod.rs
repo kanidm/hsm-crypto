@@ -5,6 +5,7 @@ use crate::structures::LoadableMsHelloKey;
 use crate::structures::SealedData;
 use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
+use crate::structures::{LoadableMsDeviceEnrolmentKey, MsInProgressEnrolment};
 use crate::structures::{LoadableRS256Key, RS256Key};
 use crate::structures::{LoadableStorageKey, StorageKey};
 use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
@@ -15,7 +16,10 @@ use crypto_glue::s256::{self, Sha256Output};
 use crypto_glue::sha1;
 use crypto_glue::spki;
 use crypto_glue::traits::*;
-use crypto_glue::x509::{BitString, Certificate};
+use crypto_glue::x509::{
+    self, BitString, Builder, Certificate, CertificateRequest, CertificateRequestBuilder,
+};
+use std::str::FromStr;
 
 mod soft;
 pub use self::soft::SoftTpm;
@@ -338,19 +342,141 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 
+    fn ms_device_enrolment_begin(
+        &mut self,
+        parent_key: &StorageKey,
+        cn: &str,
+    ) -> Result<(MsInProgressEnrolment, CertificateRequest), TpmError> {
+        let loadable_rs256_key = self.rs256_create(parent_key)?;
 
-    /*
+        let rs256_key = self.rs256_load(parent_key, &loadable_rs256_key)?;
+
+        // Create the CSR.
+        let cn_str = format!("CN={}", cn);
+        let subject =
+            x509::Name::from_str(cn_str.as_str()).map_err(|_| TpmError::X509NameInvalid)?;
+
+        let signing_key = self.rs256_keypair(&rs256_key)?;
+
+        let mut req_builder = CertificateRequestBuilder::new(subject, &signing_key)
+            .map_err(|_| TpmError::X509RequestBuilder)?;
+
+        let csr_to_sign = req_builder
+            .finalize()
+            .map_err(|_| TpmError::X509RequestSign)?;
+
+        let signature = self.rs256_sign_to_bitstring(&rs256_key, &csr_to_sign)?;
+
+        let cert_sign_req = req_builder
+            .assemble(signature)
+            .map_err(|_| TpmError::X509RequestAssemble)?;
+
+        let in_progress_enrolment = MsInProgressEnrolment { loadable_rs256_key };
+
+        Ok((in_progress_enrolment, cert_sign_req))
+    }
+
+    fn ms_device_enrolment_finalise(
+        &mut self,
+        parent_key: &StorageKey,
+        in_progress_enrolment: MsInProgressEnrolment,
+        // What format should this be? Der? X509? PEM?
+        certificate: Certificate,
+    ) -> Result<LoadableMsDeviceEnrolmentKey, TpmError> {
+        // Associate the cert with the key,
+
+        let MsInProgressEnrolment { loadable_rs256_key } = in_progress_enrolment;
+
+        let rs256_key = self.rs256_load(parent_key, &loadable_rs256_key)?;
+
+        let public_key = self.rs256_public(&rs256_key)?;
+
+        let cert_pub_key = RS256PublicKey::try_from(
+            certificate
+                .tbs_certificate
+                .subject_public_key_info
+                .owned_to_ref(),
+        )
+        .map_err(|_| TpmError::X509PublicKey)?;
+
+        if public_key != cert_pub_key {
+            return Err(TpmError::X509KeyMismatch);
+        }
+
+        let x509_der = certificate.to_der().map_err(|_| TpmError::X509ToDer)?;
+
+        Ok(LoadableMsDeviceEnrolmentKey::Rsa2048V1 {
+            loadable_rs256_key,
+            x509_der,
+        })
+    }
+
+    fn ms_device_enrolment_key_load(
+        &mut self,
+        parent_key: &StorageKey,
+        loadable_device_key: LoadableMsDeviceEnrolmentKey,
+    ) -> Result<(RS256Key, Certificate), TpmError> {
+        let (loadable_rs256_key, x509_der) = match loadable_device_key {
+            LoadableMsDeviceEnrolmentKey::SoftRsa2048V1 { key, tag, iv, x509 } => {
+                let loadable_rs256_key = LoadableRS256Key::Soft2048V2 { key, tag, iv };
+
+                (loadable_rs256_key, x509)
+            }
+            LoadableMsDeviceEnrolmentKey::Rsa2048V1 {
+                loadable_rs256_key,
+                x509_der,
+            } => (loadable_rs256_key, x509_der),
+        };
+
+        let certificate = Certificate::from_der(&x509_der).map_err(|_| TpmError::X509FromDer)?;
+
+        let rs256_key = self.rs256_load(parent_key, &loadable_rs256_key)?;
+
+        Ok((rs256_key, certificate))
+    }
+
     fn ms_hello_key_create(
         &mut self,
-    ) -> Result<(), TpmError> {
-        todo!();
-    }
-    */
+        parent_key: &StorageKey,
+        pin: &PinValue,
+    ) -> Result<LoadableMsHelloKey, TpmError> {
+        let loadable_storage_key = self.storage_key_create_pin(parent_key, pin)?;
 
+        let storage_key = self.storage_key_load_pin(parent_key, pin, &loadable_storage_key)?;
+
+        let loadable_rs256_key = self.rs256_create(&storage_key)?;
+
+        Ok(LoadableMsHelloKey::Rsa2048V1 {
+            loadable_storage_key,
+            loadable_rs256_key,
+        })
+    }
+
+    // Currently I don't think that there is a need for this to have a custom return type, unless
+    // we plan to swap out the type that the hello key is underneath? That creates it's own
+    // issues later though I guess ....
     fn ms_hello_key_load(
         &mut self,
         parent_key: &StorageKey,
         ms_hello_key: &LoadableMsHelloKey,
         pin: &PinValue,
-    ) -> Result<(RS256Key, StorageKey), TpmError>;
+    ) -> Result<(RS256Key, StorageKey), TpmError> {
+        match ms_hello_key {
+            LoadableMsHelloKey::SoftRsa2048V1 { key, tag, iv } => {
+                // Special case!!!!
+                SoftTpm::ms_hello_key_load_legacy(parent_key, pin, key, tag, iv)
+            }
+            LoadableMsHelloKey::Rsa2048V1 {
+                loadable_storage_key,
+                loadable_rs256_key,
+            } => {
+                let storage_key =
+                    self.storage_key_load_pin(parent_key, pin, &loadable_storage_key)?;
+
+                let rs256_key = self.rs256_load(&storage_key, loadable_rs256_key)?;
+
+                Ok((rs256_key, storage_key))
+            }
+        }
+    }
 }
