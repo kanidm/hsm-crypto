@@ -5,7 +5,7 @@ use crate::structures::LoadableMsHelloKey;
 use crate::structures::SealedData;
 use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
-use crate::structures::{LoadableMsDeviceEnrolmentKey, MsInProgressEnrolment};
+use crate::structures::{LoadableMsDeviceEnrolmentKey, MsInProgressEnrolment, LoadableMsOapxbcRsaKey};
 use crate::structures::{LoadableRS256Key, RS256Key};
 use crate::structures::{LoadableStorageKey, StorageKey};
 use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
@@ -28,6 +28,12 @@ pub use self::soft::SoftTpm;
 mod tss;
 #[cfg(feature = "tpm")]
 pub use self::tss::TssTpm;
+
+mod dynt;
+pub use self::dynt::BoxedDynTpm;
+
+// This is a super trait which defines full tpm feature support.
+pub trait TpmFullSupport: Tpm + TpmRS256 + TpmMsExtensions {}
 
 pub trait Tpm {
     fn root_storage_key_create(
@@ -214,7 +220,7 @@ pub trait TpmRS256 {
     fn rs256_load(
         &mut self,
         parent_key: &StorageKey,
-        hmac_key: &LoadableRS256Key,
+        loadable_rs256_key: &LoadableRS256Key,
     ) -> Result<RS256Key, TpmError>;
 
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError>;
@@ -222,20 +228,19 @@ pub trait TpmRS256 {
     fn rs256_sign(&mut self, rs256_key: &RS256Key, data: &[u8])
         -> Result<RS256Signature, TpmError>;
 
-    #[deprecated(
-        since = "0.3.0",
-        note = "RS256 Keys no longer have associated content encryption keys - use storage keys instead"
-    )]
-    fn rs256_yield_cek(&mut self, _key: &RS256Key) -> Option<StorageKey> {
-        None
-    }
-
     fn rs256_import(
         &mut self,
         parent_key: &StorageKey,
         private_key: RS256PrivateKey,
     ) -> Result<LoadableRS256Key, TpmError>;
 
+    fn rs256_oaep_dec(
+        &mut self,
+        rs256_key: &RS256Key,
+        encrypted_data: &[u8],
+    ) -> Result<Vec<u8>, TpmError>;
+
+    // ====== Generic implementations ======
     // oaep enc/dec
     fn rs256_oaep_enc(&mut self, rs256_key: &RS256Key, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
@@ -247,13 +252,7 @@ pub trait TpmRS256 {
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 
-    fn rs256_oaep_dec(
-        &mut self,
-        rs256_key: &RS256Key,
-        encrypted_data: &[u8],
-    ) -> Result<Vec<u8>, TpmError>;
 
-    // ====== Generic implementations ======
     fn rs256_fingerprint(&mut self, rs256_key: &RS256Key) -> Result<Sha256Output, TpmError> {
         self.rs256_public_der(rs256_key).map(|pub_key_der| {
             let mut hasher = s256::Sha256::new();
@@ -313,6 +312,34 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         rs256_key: &RS256Key,
         encrypted_data: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
+
+    /*
+    #[deprecated(
+        since = "0.3.0",
+        note = "RS256 Keys no longer have associated content encryption keys - use storage keys instead"
+    )]
+    */
+    fn rs256_yield_cek(&mut self, _key: &RS256Key) -> Option<StorageKey> {
+        None
+    }
+
+    fn msoapxbc_rsa_key_load(
+        &mut self,
+        parent_key: &StorageKey,
+        loadable_rs256_key: &LoadableMsOapxbcRsaKey,
+    ) -> Result<RS256Key, TpmError> {
+        self.rs256_load(parent_key, loadable_rs256_key)
+    }
+
+    fn msoapxbc_rsa_key_create(&mut self, parent_key: &StorageKey) -> Result<LoadableRS256Key, TpmError> {
+        self.rs256_create(parent_key)
+    }
+
+    fn msoapxbc_rsa_public_as_der
+    (&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
+        self.rs256_public_der(rs256_key)
+    }
+
 
     fn msoapxbc_rsa_decipher_session_key(
         &mut self,
@@ -381,9 +408,14 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         parent_key: &StorageKey,
         in_progress_enrolment: MsInProgressEnrolment,
         // What format should this be? Der? X509? PEM?
-        certificate: Certificate,
+        // Der, to help  shield david from this. Not sure how best to return it.
+        // certificate: Certificate,
+        certificate_der: &[u8],
     ) -> Result<LoadableMsDeviceEnrolmentKey, TpmError> {
         // Associate the cert with the key,
+
+        let certificate = Certificate::from_der(certificate_der)
+            .map_err(|_| TpmError::X509FromDer)?;
 
         let MsInProgressEnrolment { loadable_rs256_key } = in_progress_enrolment;
 
@@ -479,4 +511,17 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
             }
         }
     }
+
+    fn ms_hello_rsa_public_as_der
+    (&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
+        self.rs256_public_der(rs256_key)
+    }
 }
+
+
+
+
+
+
+
+

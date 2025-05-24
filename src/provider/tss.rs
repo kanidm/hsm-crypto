@@ -1285,8 +1285,8 @@ impl TpmRS256 for TssTpm {
 
     fn rs256_import(
         &mut self,
-        parent_key: &StorageKey,
-        private_key: RS256PrivateKey,
+        _parent_key: &StorageKey,
+        _private_key: RS256PrivateKey,
     ) -> Result<LoadableRS256Key, TpmError> {
         Err(TpmError::TssRs256ImportNotSupported)
     }

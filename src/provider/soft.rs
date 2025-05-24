@@ -551,18 +551,6 @@ impl TpmRS256 for SoftTpm {
             StorageKey::Tpm { .. } => Err(TpmError::IncorrectKeyType),
         }
     }
-
-    fn rs256_yield_cek(&mut self, key: &RS256Key) -> Option<StorageKey> {
-        match key {
-            RS256Key::SoftAes256GcmV2Cek {
-                key: _,
-                content_encryption_key,
-            } => Some(StorageKey::SoftAes256GcmV2 {
-                key: content_encryption_key.clone(),
-            }),
-            RS256Key::SoftAes256GcmV2 { .. } | RS256Key::Tpm { .. } => None,
-        }
-    }
 }
 
 impl TpmMsExtensions for SoftTpm {
@@ -579,6 +567,18 @@ impl TpmMsExtensions for SoftTpm {
                     .map_err(|_| TpmError::RsaOaepDecrypt)
             }
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
+        }
+    }
+
+    fn rs256_yield_cek(&mut self, key: &RS256Key) -> Option<StorageKey> {
+        match key {
+            RS256Key::SoftAes256GcmV2Cek {
+                key: _,
+                content_encryption_key,
+            } => Some(StorageKey::SoftAes256GcmV2 {
+                key: content_encryption_key.clone(),
+            }),
+            RS256Key::SoftAes256GcmV2 { .. } | RS256Key::Tpm { .. } => None,
         }
     }
 }

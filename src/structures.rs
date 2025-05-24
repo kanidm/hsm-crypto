@@ -175,6 +175,8 @@ pub enum RS256Key {
     },
 }
 
+pub type MsOapxbcRsaKey = RS256Key;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SealedData {
     // currently needs the parent to have a cek
@@ -239,3 +241,6 @@ pub enum LoadableMsDeviceEnrolmentKey {
         x509_der: Vec<u8>,
     },
 }
+
+pub type MsDeviceEnrolmentKey = RS256Key;
+
