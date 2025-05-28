@@ -24,6 +24,7 @@ pub mod provider;
 pub mod structures;
 
 pub use {authvalue::AuthValue, error::TpmError, pin::PinValue};
+pub use crypto_glue as glue;
 
 pub(crate) mod wrap;
 
