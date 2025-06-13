@@ -1,41 +1,15 @@
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::{
-    Tpm,
-    TpmFullSupport,
-    // TpmES256, TpmHmacS256,
-    TpmMsExtensions,
-    TpmRS256,
-};
+use crate::provider::{Tpm, TpmES256, TpmFullSupport, TpmMsExtensions, TpmRS256};
 use crate::structures::{
-    // ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key,
-    LoadableRS256Key,
-    LoadableStorageKey,
-    RS256Key,
-    SealedData,
+    ES256Key, LoadableES256Key, LoadableRS256Key, LoadableStorageKey, RS256Key, SealedData,
     StorageKey,
 };
 use crypto_glue::{
-    /*
-    aes256::{self},
-    aes256gcm::{
-        self, AeadInPlace, Aes256Gcm, Aes256GcmN16, Aes256GcmNonce16, Aes256GcmTag, KeyInit,
-    },
-    ecdsa_p256::{
-        self, EcdsaP256Digest, EcdsaP256PrivateKey, EcdsaP256PublicKey, EcdsaP256Signature,
-        EcdsaP256SigningKey,
-    },
-    hmac_s256::{self, HmacSha256Output},
-    */
+    ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature},
     rsa::{RS256PrivateKey, RS256PublicKey, RS256Signature},
     traits::Zeroizing,
-    /*
-    s256,
-    sha1,
-    traits::*,
-    // x509::Certificate,
-    */
 };
 
 pub struct BoxedDynTpm(Box<dyn TpmFullSupport + 'static + Send>);
@@ -111,6 +85,32 @@ impl Tpm for BoxedDynTpm {
         sealed_data: &SealedData,
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
         self.0.unseal_data(key, sealed_data)
+    }
+}
+
+impl TpmES256 for BoxedDynTpm {
+    fn es256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableES256Key, TpmError> {
+        self.0.es256_create(parent_key)
+    }
+
+    fn es256_load(
+        &mut self,
+        parent_key: &StorageKey,
+        loadable_es256_key: &LoadableES256Key,
+    ) -> Result<ES256Key, TpmError> {
+        self.0.es256_load(parent_key, loadable_es256_key)
+    }
+
+    fn es256_public(&mut self, es256_key: &ES256Key) -> Result<EcdsaP256PublicKey, TpmError> {
+        self.0.es256_public(es256_key)
+    }
+
+    fn es256_sign(
+        &mut self,
+        es256_key: &ES256Key,
+        data: &[u8],
+    ) -> Result<EcdsaP256Signature, TpmError> {
+        self.0.es256_sign(es256_key, data)
     }
 }
 

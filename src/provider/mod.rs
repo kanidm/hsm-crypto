@@ -35,7 +35,7 @@ mod dynt;
 pub use self::dynt::BoxedDynTpm;
 
 // This is a super trait which defines full tpm feature support.
-pub trait TpmFullSupport: Tpm + TpmRS256 + TpmMsExtensions {}
+pub trait TpmFullSupport: Tpm + TpmRS256 + TpmES256 + TpmMsExtensions {}
 
 pub trait Tpm {
     fn root_storage_key_create(
