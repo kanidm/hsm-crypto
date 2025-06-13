@@ -243,4 +243,3 @@ pub enum LoadableMsDeviceEnrolmentKey {
 }
 
 pub type MsDeviceEnrolmentKey = RS256Key;
-

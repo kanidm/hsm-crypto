@@ -288,6 +288,8 @@ impl TssTpm {
     }
 }
 
+impl TpmFullSupport for TssTpm {}
+
 impl Tpm for TssTpm {
     // create a root-storage-key
     fn root_storage_key_create(

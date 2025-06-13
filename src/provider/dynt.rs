@@ -1,15 +1,20 @@
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::{Tpm,
-    // TpmES256, TpmHmacS256,
-    TpmMsExtensions, TpmRS256,
+use crate::provider::{
+    Tpm,
     TpmFullSupport,
-    };
+    // TpmES256, TpmHmacS256,
+    TpmMsExtensions,
+    TpmRS256,
+};
 use crate::structures::{
-    // ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, 
+    // ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key,
     LoadableRS256Key,
-    LoadableStorageKey, RS256Key, SealedData, StorageKey,
+    LoadableStorageKey,
+    RS256Key,
+    SealedData,
+    StorageKey,
 };
 use crypto_glue::{
     /*
@@ -23,7 +28,6 @@ use crypto_glue::{
     },
     hmac_s256::{self, HmacSha256Output},
     */
-
     rsa::{RS256PrivateKey, RS256PublicKey, RS256Signature},
     traits::Zeroizing,
     /*
@@ -34,8 +38,16 @@ use crypto_glue::{
     */
 };
 
-
 pub struct BoxedDynTpm(Box<dyn TpmFullSupport + 'static + Send>);
+
+impl<T> From<T> for BoxedDynTpm
+where
+    T: TpmFullSupport + 'static + Send,
+{
+    fn from(tpm: T) -> Self {
+        BoxedDynTpm(Box::new(tpm))
+    }
+}
 
 impl Tpm for BoxedDynTpm {
     fn root_storage_key_create(
@@ -119,10 +131,13 @@ impl TpmRS256 for BoxedDynTpm {
         self.0.rs256_public(rs256_key)
     }
 
-    fn rs256_sign(&mut self, rs256_key: &RS256Key, data: &[u8])
-        -> Result<RS256Signature, TpmError> {
+    fn rs256_sign(
+        &mut self,
+        rs256_key: &RS256Key,
+        data: &[u8],
+    ) -> Result<RS256Signature, TpmError> {
         self.0.rs256_sign(rs256_key, data)
-        }
+    }
 
     fn rs256_import(
         &mut self,
@@ -154,7 +169,3 @@ impl TpmMsExtensions for BoxedDynTpm {
         self.0.rs256_yield_cek(key)
     }
 }
-
-
-
-

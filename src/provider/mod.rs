@@ -5,7 +5,9 @@ use crate::structures::LoadableMsHelloKey;
 use crate::structures::SealedData;
 use crate::structures::{ES256Key, LoadableES256Key};
 use crate::structures::{HmacS256Key, LoadableHmacS256Key};
-use crate::structures::{LoadableMsDeviceEnrolmentKey, MsInProgressEnrolment, LoadableMsOapxbcRsaKey};
+use crate::structures::{
+    LoadableMsDeviceEnrolmentKey, LoadableMsOapxbcRsaKey, MsInProgressEnrolment,
+};
 use crate::structures::{LoadableRS256Key, RS256Key};
 use crate::structures::{LoadableStorageKey, StorageKey};
 use crypto_glue::ecdsa_p256::{EcdsaP256PublicKey, EcdsaP256Signature, EcdsaP256VerifyingKey};
@@ -252,7 +254,6 @@ pub trait TpmRS256 {
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 
-
     fn rs256_fingerprint(&mut self, rs256_key: &RS256Key) -> Result<Sha256Output, TpmError> {
         self.rs256_public_der(rs256_key).map(|pub_key_der| {
             let mut hasher = s256::Sha256::new();
@@ -331,15 +332,16 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         self.rs256_load(parent_key, loadable_rs256_key)
     }
 
-    fn msoapxbc_rsa_key_create(&mut self, parent_key: &StorageKey) -> Result<LoadableRS256Key, TpmError> {
+    fn msoapxbc_rsa_key_create(
+        &mut self,
+        parent_key: &StorageKey,
+    ) -> Result<LoadableRS256Key, TpmError> {
         self.rs256_create(parent_key)
     }
 
-    fn msoapxbc_rsa_public_as_der
-    (&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
+    fn msoapxbc_rsa_public_as_der(&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
         self.rs256_public_der(rs256_key)
     }
-
 
     fn msoapxbc_rsa_decipher_session_key(
         &mut self,
@@ -414,8 +416,8 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
     ) -> Result<LoadableMsDeviceEnrolmentKey, TpmError> {
         // Associate the cert with the key,
 
-        let certificate = Certificate::from_der(certificate_der)
-            .map_err(|_| TpmError::X509FromDer)?;
+        let certificate =
+            Certificate::from_der(certificate_der).map_err(|_| TpmError::X509FromDer)?;
 
         let MsInProgressEnrolment { loadable_rs256_key } = in_progress_enrolment;
 
@@ -503,7 +505,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
                 loadable_rs256_key,
             } => {
                 let storage_key =
-                    self.storage_key_load_pin(parent_key, pin, &loadable_storage_key)?;
+                    self.storage_key_load_pin(parent_key, pin, loadable_storage_key)?;
 
                 let rs256_key = self.rs256_load(&storage_key, loadable_rs256_key)?;
 
@@ -512,16 +514,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         }
     }
 
-    fn ms_hello_rsa_public_as_der
-    (&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
+    fn ms_hello_rsa_public_as_der(&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
         self.rs256_public_der(rs256_key)
     }
 }
-
-
-
-
-
-
-
-
