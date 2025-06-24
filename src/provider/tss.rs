@@ -348,6 +348,13 @@ impl Tpm for TssTpm {
         )
     }
 
+    fn machine_key_create(
+        &mut self,
+        auth_value: &AuthValue,
+    ) -> Result<LoadableStorageKey, TpmError> {
+        self.root_storage_key_create(auth_value)
+    }
+
     // load root storage key
     fn root_storage_key_load(
         &mut self,
@@ -432,6 +439,14 @@ impl Tpm for TssTpm {
             }
             _ => Err(TpmError::IncorrectKeyType),
         }
+    }
+
+    fn machine_key_load(
+        &mut self,
+        auth_value: &AuthValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError> {
+        self.root_storage_key_load(auth_value, lsk)
     }
 
     // create a subordinate storage key.

@@ -43,7 +43,20 @@ pub trait Tpm {
         auth_value: &AuthValue,
     ) -> Result<LoadableStorageKey, TpmError>;
 
+    #[deprecated(note = "Use `root_storage_key_create` instead")]
+    fn machine_key_create(
+        &mut self,
+        auth_value: &AuthValue,
+    ) -> Result<LoadableStorageKey, TpmError>;
+
     fn root_storage_key_load(
+        &mut self,
+        auth_value: &AuthValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError>;
+
+    #[deprecated(note = "Use `root_storage_key_load` instead")]
+    fn machine_key_load(
         &mut self,
         auth_value: &AuthValue,
         lsk: &LoadableStorageKey,

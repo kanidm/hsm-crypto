@@ -28,6 +28,12 @@ use tracing::error;
 #[derive(Default)]
 pub struct SoftTpm {}
 
+impl SoftTpm {
+    pub fn new() -> Self {
+        SoftTpm::default()
+    }
+}
+
 impl TpmFullSupport for SoftTpm {}
 
 impl Tpm for SoftTpm {
@@ -50,6 +56,13 @@ impl Tpm for SoftTpm {
                 })
             }
         }
+    }
+
+    fn machine_key_create(
+        &mut self,
+        auth_value: &AuthValue,
+    ) -> Result<LoadableStorageKey, TpmError> {
+        self.root_storage_key_create(auth_value)
     }
 
     // load root storage key
@@ -82,6 +95,14 @@ impl Tpm for SoftTpm {
                 .map(|key| StorageKey::SoftAes256GcmV2 { key }),
             (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) => Err(TpmError::IncorrectKeyType),
         }
+    }
+
+    fn machine_key_load(
+        &mut self,
+        auth_value: &AuthValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError> {
+        self.root_storage_key_load(auth_value, lsk)
     }
 
     // create a subordinate storage key.
