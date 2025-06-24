@@ -64,6 +64,14 @@ impl Tpm for BoxedDynTpm {
         self.0.root_storage_key_load(auth_value, lsk)
     }
 
+    fn machine_key_load(
+        &mut self,
+        auth_value: &AuthValue,
+        lsk: &LoadableStorageKey,
+    ) -> Result<StorageKey, TpmError> {
+        self.0.root_storage_key_load(auth_value, lsk)
+    }
+
     fn storage_key_create(
         &mut self,
         parent_key: &StorageKey,
