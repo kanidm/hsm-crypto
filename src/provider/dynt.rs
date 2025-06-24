@@ -14,6 +14,15 @@ use crypto_glue::{
 
 pub struct BoxedDynTpm(Box<dyn TpmFullSupport + 'static + Send>);
 
+impl BoxedDynTpm {
+    pub fn new<T>(tpm: T) -> Self
+    where
+        T: TpmFullSupport + 'static + Send,
+    {
+        Self::from(tpm)
+    }
+}
+
 impl<T> From<T> for BoxedDynTpm
 where
     T: TpmFullSupport + 'static + Send,
