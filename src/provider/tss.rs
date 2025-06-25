@@ -25,7 +25,7 @@ use tss_esapi::TctiNameConf;
 use crate::authvalue::AuthValue;
 use crate::error::TpmError;
 use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmFullSupport, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
+use crate::provider::{Tpm, TpmES256, TpmFullSupport, TpmHmacS256, TpmMsExtensions, TpmRS256};
 use crate::structures::{
     ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
     LoadableStorageKey, RS256Key, SealedData, StorageKey,
