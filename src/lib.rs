@@ -30,3 +30,49 @@ pub(crate) mod wrap;
 
 #[cfg(test)]
 mod tests;
+
+// Deprecation notices.
+#[deprecated(since = "0.3.0", note = "Use `kanidm_hsm_crypto::provider`")]
+pub mod soft {
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use `kanidm_hsm_crypto::provider::SoftTpm` instead."
+    )]
+    pub struct SoftTpm;
+}
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::provider::BoxedDynTpm` instead."
+)]
+pub struct BoxedDynTpm;
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::structures::LoadableHmacS256Key` instead."
+)]
+pub struct LoadableHmacKey;
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::structures::LoadableStorageKey` instead."
+)]
+pub struct LoadableMachineKey;
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::provider::Tpm` and associated traits instead."
+)]
+pub struct Tpm;
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::structures::LoadableRS256Key` instead."
+)]
+pub struct LoadableMsOapxbcRsaKey;
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::structures::SealedData` instead."
+)]
+pub struct LoadableMsOapxbcSessionKey;
