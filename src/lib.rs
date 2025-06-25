@@ -63,7 +63,7 @@ pub struct LoadableMachineKey;
     since = "0.3.0",
     note = "Use `kanidm_hsm_crypto::provider::Tpm` and associated traits instead."
 )]
-pub struct Tpm;
+pub trait Tpm {}
 
 #[deprecated(
     since = "0.3.0",
