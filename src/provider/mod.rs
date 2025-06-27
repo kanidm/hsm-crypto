@@ -26,16 +26,17 @@ use std::str::FromStr;
 mod soft;
 pub use self::soft::SoftTpm;
 
+mod dynt;
+pub use self::dynt::BoxedDynTpm;
+
 #[cfg(feature = "tpm")]
 mod tss;
 #[cfg(feature = "tpm")]
 pub use self::tss::TssTpm;
 
-mod dynt;
-pub use self::dynt::BoxedDynTpm;
-
 // This is a super trait which defines full tpm feature support.
-pub trait TpmFullSupport: Tpm + TpmRS256 + TpmES256 + TpmMsExtensions {}
+pub trait TpmFullSupport: Tpm + TpmHmacS256 + TpmRS256 + TpmES256 + TpmMsExtensions {}
+impl<T: Tpm + TpmHmacS256 + TpmRS256 + TpmES256 + TpmMsExtensions> TpmFullSupport for T {}
 
 pub trait Tpm {
     fn root_storage_key_create(
@@ -86,7 +87,7 @@ pub trait Tpm {
     ) -> Result<Zeroizing<Vec<u8>>, TpmError>;
 }
 
-pub trait TpmHmacS256 {
+pub trait TpmHmacS256: Tpm {
     fn hmac_s256_create(
         &mut self,
         parent_key: &StorageKey,
@@ -125,7 +126,7 @@ impl spki::DynSignatureAlgorithmIdentifier for TpmES256Keypair {
     }
 }
 
-pub trait TpmES256 {
+pub trait TpmES256: Tpm {
     fn es256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableES256Key, TpmError>;
 
     fn es256_load(
@@ -216,7 +217,7 @@ impl spki::DynSignatureAlgorithmIdentifier for TpmRS256Keypair {
     }
 }
 
-pub trait TpmRS256 {
+pub trait TpmRS256: Tpm {
     fn rs256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableRS256Key, TpmError>;
 
     fn rs256_load(
@@ -381,7 +382,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         let rs256_key = self.rs256_load(parent_key, &loadable_rs256_key)?;
 
         // Create the CSR.
-        let cn_str = format!("CN={}", cn);
+        let cn_str = format!("CN={cn}");
         let subject =
             x509::Name::from_str(cn_str.as_str()).map_err(|_| TpmError::X509NameInvalid)?;
 
