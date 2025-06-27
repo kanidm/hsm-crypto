@@ -32,6 +32,22 @@ where
     }
 }
 
+impl std::ops::Deref for BoxedDynTpm {
+    type Target = dyn TpmFullSupport;
+
+    // Required method
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl std::ops::DerefMut for BoxedDynTpm {
+    // Required method
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut()
+    }
+}
+
 impl Tpm for BoxedDynTpm {
     fn root_storage_key_create(
         &mut self,
