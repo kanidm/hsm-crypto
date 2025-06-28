@@ -28,6 +28,12 @@ use tracing::error;
 #[derive(Default)]
 pub struct SoftTpm {}
 
+impl SoftTpm {
+    pub fn new() -> Self {
+        SoftTpm::default()
+    }
+}
+
 impl Tpm for SoftTpm {
     // create a root-storage-key
     fn root_storage_key_create(

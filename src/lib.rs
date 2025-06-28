@@ -63,7 +63,7 @@ pub struct LoadableMachineKey;
     since = "0.3.0",
     note = "Use `kanidm_hsm_crypto::provider::Tpm` and associated traits instead."
 )]
-pub struct Tpm;
+pub trait Tpm {}
 
 #[deprecated(
     since = "0.3.0",
@@ -76,3 +76,9 @@ pub struct LoadableMsOapxbcRsaKey;
     note = "Use `kanidm_hsm_crypto::structures::SealedData` instead."
 )]
 pub struct LoadableMsOapxbcSessionKey;
+
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `kanidm_hsm_crypto::structures::HmacS256Key` instead."
+)]
+pub struct HmacKey;
