@@ -10,7 +10,7 @@ Existing *soft* tpm keys will continue to work during this upgrade. Most types h
 and path to better reflect their capabilities within a TPM.
 
 * Tpm functionality has been broken down to specific traits allowing you to mix and match what you need.
-* Keys are seperated by their cryptographic type, rather than purpose.
+* Keys are separated by their cryptographic type, rather than purpose.
 * PIN's may now only be set on `StorageKey`s.
 * OpenSSL is no longer required as a library.
 * `ES256` and `RS256` can now be used with X509 Certificate requests and operations.
