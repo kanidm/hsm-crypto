@@ -43,9 +43,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust_version }}
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.3
-        with:
-          version: v0.4.2
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - if: runner.os != 'windows'
         run: |
           sudo apt-get update && \
@@ -85,9 +83,7 @@ jobs:
           sudo apt-get -y upgrade && \
           sudo apt-get -y install \
             libtss2-dev
-      - uses: mozilla-actions/sccache-action@v0.0.3
-        with:
-          version: v0.4.2
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Build documentation with zero dependencies / features.
         # This tests that all the stubs work properly for optional dependencies,
         run: |
