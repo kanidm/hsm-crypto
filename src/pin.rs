@@ -12,14 +12,6 @@ pub(crate) const TPM_PIN_MIN_LEN: u8 = 6;
 // as that's the size of sha256 output.
 pub(crate) const TPM_PIN_MAX_LEN: u8 = 32;
 
-// These can't be changed else it will break key derivation.
-//
-// To increase these parameters we need to introduce a new pin
-// derive function that has the new values.
-const ARGON2ID_MEMORY: u32 = 32_768;
-const ARGON2ID_TIME: u32 = 1;
-const ARGON2ID_PARALLEL: u32 = 1;
-
 pub struct PinValue {
     value: Zeroizing<Vec<u8>>,
 }
@@ -49,6 +41,14 @@ impl PinValue {
 
     /// Derive an AES256GCM Key from this PIN. This is used by the soft-tpm exclusively.
     pub(crate) fn derive_aes_256(&self, parent_key: &Aes256Key) -> Result<Aes256Key, TpmError> {
+        // These can't be changed else it will break key derivation.
+        //
+        // To increase these parameters we need to introduce a new pin
+        // derive function that has the new values.
+        const ARGON2ID_MEMORY: u32 = 32_768;
+        const ARGON2ID_TIME: u32 = 1;
+        const ARGON2ID_PARALLEL: u32 = 1;
+
         use argon2::{Algorithm, Argon2, Params, Version};
 
         // Want at least 8 bytes salt, 16 bytes pw input.
