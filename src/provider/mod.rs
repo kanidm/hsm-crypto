@@ -22,6 +22,7 @@ use crypto_glue::x509::{
     self, BitString, Builder, Certificate, CertificateRequest, CertificateRequestBuilder,
 };
 use std::str::FromStr;
+use tracing::instrument;
 
 mod soft;
 pub use self::soft::SoftTpm;
@@ -182,6 +183,7 @@ pub trait TpmES256: Tpm {
             .map_err(|_| TpmError::EcdsaPublicToPem)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_sign_to_bitstring(
         &mut self,
         es256_key: &ES256Key,
@@ -192,6 +194,7 @@ pub trait TpmES256: Tpm {
         BitString::new(0, signature.to_vec()).map_err(|_| TpmError::AsnBitStringInvalid)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_verify(
         &mut self,
         es256_key: &ES256Key,
@@ -205,6 +208,7 @@ pub trait TpmES256: Tpm {
         Ok(verifier.verify(data, sig).is_ok())
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_keypair(&mut self, es256_key: &ES256Key) -> Result<TpmES256Keypair, TpmError> {
         let pub_key = self.es256_public(es256_key)?;
 
@@ -262,6 +266,7 @@ pub trait TpmRS256: Tpm {
 
     // ====== Generic implementations ======
     // oaep enc/dec
+    #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_enc(&mut self, rs256_key: &RS256Key, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
         let padding = rsa::Oaep::new::<s256::Sha256>();
@@ -272,6 +277,7 @@ pub trait TpmRS256: Tpm {
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_fingerprint(&mut self, rs256_key: &RS256Key) -> Result<Sha256Output, TpmError> {
         self.rs256_public_der(rs256_key).map(|pub_key_der| {
             let mut hasher = s256::Sha256::new();
@@ -280,6 +286,7 @@ pub trait TpmRS256: Tpm {
         })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_public_der(&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
         self.rs256_public(rs256_key)?
             .to_public_key_der()
@@ -287,12 +294,14 @@ pub trait TpmRS256: Tpm {
             .map_err(|_| TpmError::RsaPublicToDer)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_public_pem(&mut self, rs256_key: &RS256Key) -> Result<String, TpmError> {
         self.rs256_public(rs256_key)?
             .to_public_key_pem(Default::default())
             .map_err(|_| TpmError::RsaPublicToPem)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_sign_to_bitstring(
         &mut self,
         rs256_key: &RS256Key,
@@ -303,6 +312,7 @@ pub trait TpmRS256: Tpm {
         BitString::new(0, signature.to_vec()).map_err(|_| TpmError::AsnBitStringInvalid)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_verify(
         &mut self,
         rs256_key: &RS256Key,
@@ -316,6 +326,7 @@ pub trait TpmRS256: Tpm {
         Ok(verifier.verify(data, sig).is_ok())
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_keypair(&mut self, rs256_key: &RS256Key) -> Result<TpmRS256Keypair, TpmError> {
         let pub_key = self.rs256_public(rs256_key)?;
 
@@ -361,6 +372,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         self.rs256_public_der(rs256_key)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn msoapxbc_rsa_decipher_session_key(
         &mut self,
         rs256_key: &RS256Key,
@@ -375,6 +387,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         self.seal_data(parent_key, data)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn msoapxbc_rsa_encipher_session_key(
         &mut self,
         rs256_key: &RS256Key,
@@ -389,6 +402,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
             .map_err(|_| TpmError::RsaOaepEncrypt)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn ms_device_enrolment_begin(
         &mut self,
         parent_key: &StorageKey,
@@ -423,6 +437,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         Ok((in_progress_enrolment, cert_sign_req))
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn ms_device_enrolment_finalise(
         &mut self,
         parent_key: &StorageKey,
@@ -463,6 +478,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn ms_device_enrolment_key_load(
         &mut self,
         parent_key: &StorageKey,
@@ -487,6 +503,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         Ok((rs256_key, certificate))
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn ms_hello_key_create(
         &mut self,
         parent_key: &StorageKey,
@@ -507,6 +524,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
     // Currently I don't think that there is a need for this to have a custom return type, unless
     // we plan to swap out the type that the hello key is underneath? That creates it's own
     // issues later though I guess ....
+    #[instrument(level = "debug", skip_all)]
     fn ms_hello_key_load(
         &mut self,
         parent_key: &StorageKey,
@@ -532,6 +550,7 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn ms_hello_rsa_public_as_der(&mut self, rs256_key: &RS256Key) -> Result<Vec<u8>, TpmError> {
         self.rs256_public_der(rs256_key)
     }

@@ -23,7 +23,7 @@ use crypto_glue::{
     traits::*,
     // x509::Certificate,
 };
-use tracing::error;
+use tracing::{error, instrument};
 
 #[derive(Default)]
 pub struct SoftTpm {}
@@ -36,6 +36,7 @@ impl SoftTpm {
 
 impl Tpm for SoftTpm {
     // create a root-storage-key
+    #[instrument(level = "debug", skip_all)]
     fn root_storage_key_create(
         &mut self,
         auth_value: &AuthValue,
@@ -57,6 +58,7 @@ impl Tpm for SoftTpm {
     }
 
     // load root storage key
+    #[instrument(level = "debug", skip_all)]
     fn root_storage_key_load(
         &mut self,
         auth_value: &AuthValue,
@@ -89,6 +91,7 @@ impl Tpm for SoftTpm {
     }
 
     // create a subordinate storage key.
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_create(
         &mut self,
         parent_key: &StorageKey,
@@ -109,6 +112,7 @@ impl Tpm for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_load(
         &mut self,
         parent_key: &StorageKey,
@@ -143,6 +147,7 @@ impl Tpm for SoftTpm {
     }
 
     // Create a storage key that has a pin value to protect it.
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_create_pin(
         &mut self,
         parent_key: &StorageKey,
@@ -165,6 +170,7 @@ impl Tpm for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_load_pin(
         &mut self,
         parent_key: &StorageKey,
@@ -205,6 +211,7 @@ impl Tpm for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn seal_data(
         &mut self,
         key: &StorageKey,
@@ -219,6 +226,7 @@ impl Tpm for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn unseal_data(
         &mut self,
         key: &StorageKey,
@@ -247,6 +255,7 @@ impl Tpm for SoftTpm {
 }
 
 impl TpmHmacS256 for SoftTpm {
+    #[instrument(level = "debug", skip_all)]
     fn hmac_s256_create(
         &mut self,
         parent_key: &StorageKey,
@@ -267,6 +276,7 @@ impl TpmHmacS256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn hmac_s256_load(
         &mut self,
         parent_key: &StorageKey,
@@ -311,6 +321,7 @@ impl TpmHmacS256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn hmac_s256(
         &mut self,
         hmac_key: &HmacS256Key,
@@ -324,6 +335,7 @@ impl TpmHmacS256 for SoftTpm {
 }
 
 impl TpmES256 for SoftTpm {
+    #[instrument(level = "debug", skip_all)]
     fn es256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableES256Key, TpmError> {
         let key_to_wrap = ecdsa_p256::new_key();
 
@@ -343,6 +355,7 @@ impl TpmES256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_load(
         &mut self,
         parent_key: &StorageKey,
@@ -368,6 +381,7 @@ impl TpmES256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_public(&mut self, es256_key: &ES256Key) -> Result<EcdsaP256PublicKey, TpmError> {
         match es256_key {
             ES256Key::SoftAes256GcmV2 { key } => Ok(key.public_key()),
@@ -375,6 +389,7 @@ impl TpmES256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_sign(
         &mut self,
         es256_key: &ES256Key,
@@ -396,6 +411,7 @@ impl TpmES256 for SoftTpm {
 }
 
 impl TpmRS256 for SoftTpm {
+    #[instrument(level = "debug", skip_all)]
     fn rs256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableRS256Key, TpmError> {
         let key_to_wrap = rsa::new_key(rsa::MIN_BITS).map_err(|err| {
             error!(?err, "Unable to generate RSA private key");
@@ -405,6 +421,7 @@ impl TpmRS256 for SoftTpm {
         self.rs256_import(parent_key, key_to_wrap)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_load(
         &mut self,
         parent_key: &StorageKey,
@@ -489,6 +506,7 @@ impl TpmRS256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
         match rs256_key {
             RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
@@ -498,6 +516,7 @@ impl TpmRS256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_sign(
         &mut self,
         rs256_key: &RS256Key,
@@ -518,6 +537,7 @@ impl TpmRS256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_dec(
         &mut self,
         rs256_key: &RS256Key,
@@ -533,6 +553,7 @@ impl TpmRS256 for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_import(
         &mut self,
         parent_key: &StorageKey,
@@ -560,6 +581,7 @@ impl TpmRS256 for SoftTpm {
 }
 
 impl TpmMsExtensions for SoftTpm {
+    #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_dec_sha1(
         &mut self,
         rs256_key: &RS256Key,
@@ -576,6 +598,7 @@ impl TpmMsExtensions for SoftTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_yield_cek(&mut self, key: &RS256Key) -> Option<StorageKey> {
         match key {
             RS256Key::SoftAes256GcmV2Cek {
@@ -590,6 +613,7 @@ impl TpmMsExtensions for SoftTpm {
 }
 
 impl SoftTpm {
+    #[instrument(level = "debug", skip_all)]
     pub(crate) fn ms_hello_key_load_legacy(
         parent_key: &StorageKey,
         pin: &PinValue,
@@ -634,37 +658,37 @@ mod tests {
 
     #[test]
     fn soft_tpm_storage() {
-        let soft_tpm = SoftTpm::default();
+        let mut soft_tpm = SoftTpm::default();
 
-        crate::tests::test_tpm_storage(soft_tpm);
+        crate::tests::test_tpm_storage(&mut soft_tpm);
     }
 
     #[test]
     fn soft_tpm_hmac() {
-        let soft_tpm = SoftTpm::default();
+        let mut soft_tpm = SoftTpm::default();
 
-        crate::tests::test_tpm_hmac(soft_tpm);
+        crate::tests::test_tpm_hmac(&mut soft_tpm);
     }
 
     #[test]
     fn soft_tpm_ecdsa_p256() {
-        let soft_tpm = SoftTpm::default();
+        let mut soft_tpm = SoftTpm::default();
 
-        crate::tests::test_tpm_ecdsa_p256(soft_tpm);
+        crate::tests::test_tpm_ecdsa_p256(&mut soft_tpm);
     }
 
     #[test]
     fn soft_tpm_rs256() {
-        let soft_tpm = SoftTpm::default();
+        let mut soft_tpm = SoftTpm::default();
 
-        crate::tests::test_tpm_rs256(soft_tpm);
+        crate::tests::test_tpm_rs256(&mut soft_tpm);
     }
 
     #[test]
     fn soft_tpm_msoapxbc() {
-        let soft_tpm = SoftTpm::default();
+        let mut soft_tpm = SoftTpm::default();
 
-        crate::tests::test_tpm_msoapxbc(soft_tpm);
+        crate::tests::test_tpm_msoapxbc(&mut soft_tpm);
     }
 
     #[test]

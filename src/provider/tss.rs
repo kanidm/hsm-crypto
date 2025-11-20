@@ -1,4 +1,14 @@
+use crate::authvalue::AuthValue;
+use crate::error::TpmError;
+use crate::pin::PinValue;
+use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
+use crate::structures::{
+    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
+    LoadableStorageKey, RS256Key, SealedData, StorageKey,
+};
 use std::str::FromStr;
+use tracing::instrument;
+use tracing::{error, trace};
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
@@ -21,16 +31,6 @@ use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
 use tss_esapi::utils::TpmsContext;
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
-
-use crate::authvalue::AuthValue;
-use crate::error::TpmError;
-use crate::pin::PinValue;
-use crate::provider::{Tpm, TpmES256, TpmHmacS256, TpmMsExtensions, TpmRS256};
-use crate::structures::{
-    ES256Key, HmacS256Key, LoadableES256Key, LoadableHmacS256Key, LoadableRS256Key,
-    LoadableStorageKey, RS256Key, SealedData, StorageKey,
-};
-use tracing::error;
 
 use crypto_glue::{
     aes256,
@@ -60,6 +60,7 @@ impl Drop for TssTpm {
 }
 
 impl TssTpm {
+    #[instrument(level = "debug", skip_all)]
     pub fn new(tcti_name: &str) -> Result<Self, TpmError> {
         let tpm_name_config = TctiNameConf::from_str(tcti_name).map_err(|tpm_err| {
             error!(?tpm_err);
@@ -224,6 +225,7 @@ impl TssTpm {
     {
         let res = f(self, object);
 
+        trace!(handle = ?object, "unload");
         self.tpm_ctx.flush_context(object).map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::TssContextFlushObject
@@ -245,8 +247,14 @@ impl TssTpm {
             TpmError::TssContextLoad
         })?;
 
+        {
+            let object_handle: ObjectHandle = object.into();
+            trace!(handle = ?object_handle, "load");
+        }
+
         let res = f(self, object);
 
+        trace!(handle = ?object, "unload");
         self.tpm_ctx.flush_context(object).map_err(|tpm_err| {
             error!(?tpm_err);
             TpmError::TssContextFlushObject
@@ -276,6 +284,8 @@ impl TssTpm {
             },
         )?;
 
+        trace!(handle = ?key_handle, "load");
+
         // The object is now loaded, and the parent key has been released. Now we can
         // save the context for the child key so that we don't fill up objectMemory in
         // the context.
@@ -290,12 +300,15 @@ impl TssTpm {
 
 impl Tpm for TssTpm {
     // create a root-storage-key
+    #[instrument(level = "debug", skip_all)]
     fn root_storage_key_create(
         &mut self,
         auth_value: &AuthValue,
     ) -> Result<LoadableStorageKey, TpmError> {
         // Setup the primary key.
         let primary = self.setup_owner_primary()?;
+
+        trace!(handle = ?primary.key_handle, "load");
 
         let tpm_auth_value = match auth_value {
             AuthValue::Key256Bit { auth_key } => Auth::from_bytes(auth_key.as_ref()),
@@ -347,6 +360,7 @@ impl Tpm for TssTpm {
     }
 
     // load root storage key
+    #[instrument(level = "debug", skip_all)]
     fn root_storage_key_load(
         &mut self,
         auth_value: &AuthValue,
@@ -384,6 +398,8 @@ impl Tpm for TssTpm {
                     },
                 )?;
 
+                trace!(handle = ?root_key_handle, "load");
+
                 // At the end of this fn, root_key_handle is unloaded and our storage key
                 // handle is ready to rock.
                 let key_handle = self.execute_with_temporary_object(
@@ -411,6 +427,8 @@ impl Tpm for TssTpm {
                     },
                 )?;
 
+                trace!(handle = ?key_handle, "load");
+
                 // Load the subordinate storage key. This is what roots our actual storage because
                 // when you unload/load a context with an authValue you must always supply that
                 // authValue. To reduce the need to keep authValue in memory and ship it around, we
@@ -433,6 +451,7 @@ impl Tpm for TssTpm {
     }
 
     // create a subordinate storage key.
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_create(
         &mut self,
         parent_key: &StorageKey,
@@ -455,6 +474,7 @@ impl Tpm for TssTpm {
         })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_load(
         &mut self,
         parent_key: &StorageKey,
@@ -480,6 +500,7 @@ impl Tpm for TssTpm {
     }
 
     // Create a storage key that has a pin value to protect it.
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_create_pin(
         &mut self,
         parent_key: &StorageKey,
@@ -510,6 +531,8 @@ impl Tpm for TssTpm {
                         TpmError::TssStorageKeyLoad
                     })?;
 
+                trace!(handle = ?key_handle, "load");
+
                 // Now it's loaded, create the machine storage key
                 let (sk_private, sk_public) = hsm_ctx.execute_with_temporary_object(
                     key_handle.into(),
@@ -536,6 +559,7 @@ impl Tpm for TssTpm {
         )
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn storage_key_load_pin(
         &mut self,
         parent_key: &StorageKey,
@@ -575,6 +599,8 @@ impl Tpm for TssTpm {
             },
         )?;
 
+        trace!(handle = ?auth_parent_key_handle, "load");
+
         // At the end of this fn, root_key_handle is unloaded and our storage key
         // handle is ready to rock.
         let key_handle = self.execute_with_temporary_object(
@@ -602,6 +628,8 @@ impl Tpm for TssTpm {
             },
         )?;
 
+        trace!(handle = ?key_handle, "load");
+
         self.execute_with_temporary_object(key_handle.into(), |hsm_ctx, key_handle| {
             hsm_ctx
                 .tpm_ctx
@@ -614,6 +642,7 @@ impl Tpm for TssTpm {
         })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn seal_data(
         &mut self,
         key: &StorageKey,
@@ -690,6 +719,7 @@ impl Tpm for TssTpm {
         })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn unseal_data(
         &mut self,
         key: &StorageKey,
@@ -722,14 +752,21 @@ impl Tpm for TssTpm {
                         TpmError::TssSealingKeyLoad
                     })?;
 
-                hsm_ctx
-                    .tpm_ctx
-                    .unseal(sealed_object.into())
-                    .map(|data| Vec::from(data.as_slice()))
-                    .map_err(|tpm_err| {
-                        error!(?tpm_err);
-                        TpmError::TssUnseal
-                    })
+                trace!(handle = ?sealed_object, "load");
+
+                hsm_ctx.execute_with_temporary_object(
+                    sealed_object.into(),
+                    |hsm_ctx, sealed_handle| {
+                        hsm_ctx
+                            .tpm_ctx
+                            .unseal(sealed_handle.into())
+                            .map(|data| Vec::from(data.as_slice()))
+                            .map_err(|tpm_err| {
+                                error!(?tpm_err);
+                                TpmError::TssUnseal
+                            })
+                    },
+                )
             },
         )?;
 
@@ -741,6 +778,7 @@ impl Tpm for TssTpm {
 }
 
 impl TpmHmacS256 for TssTpm {
+    #[instrument(level = "debug", skip_all)]
     fn hmac_s256_create(
         &mut self,
         parent_key: &StorageKey,
@@ -811,6 +849,7 @@ impl TpmHmacS256 for TssTpm {
         )
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn hmac_s256_load(
         &mut self,
         parent_key: &StorageKey,
@@ -829,6 +868,7 @@ impl TpmHmacS256 for TssTpm {
             .map(|key_context| HmacS256Key::Tpm { key_context })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn hmac_s256(
         &mut self,
         hmac_key: &HmacS256Key,
@@ -866,6 +906,7 @@ impl TpmHmacS256 for TssTpm {
 }
 
 impl TpmES256 for TssTpm {
+    #[instrument(level = "debug", skip_all)]
     fn es256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableES256Key, TpmError> {
         let storage_key_context = match parent_key {
             StorageKey::Tpm { key_context } => key_context.clone(),
@@ -930,6 +971,7 @@ impl TpmES256 for TssTpm {
         )
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_load(
         &mut self,
         parent_key: &StorageKey,
@@ -948,6 +990,7 @@ impl TpmES256 for TssTpm {
             .map(|key_context| ES256Key::Tpm { key_context })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_public(&mut self, es256_key: &ES256Key) -> Result<EcdsaP256PublicKey, TpmError> {
         let es256_key_context = match es256_key {
             ES256Key::Tpm { key_context } => key_context.clone(),
@@ -989,6 +1032,7 @@ impl TpmES256 for TssTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn es256_sign(
         &mut self,
         es256_key: &ES256Key,
@@ -1061,6 +1105,7 @@ impl TpmES256 for TssTpm {
 }
 
 impl TpmRS256 for TssTpm {
+    #[instrument(level = "debug", skip_all)]
     fn rs256_create(&mut self, parent_key: &StorageKey) -> Result<LoadableRS256Key, TpmError> {
         let storage_key_context = match parent_key {
             StorageKey::Tpm { key_context } => key_context.clone(),
@@ -1130,6 +1175,7 @@ impl TpmRS256 for TssTpm {
         )
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_load(
         &mut self,
         parent_key: &StorageKey,
@@ -1148,6 +1194,7 @@ impl TpmRS256 for TssTpm {
             .map(|key_context| RS256Key::Tpm { key_context })
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError> {
         let rs256_key_context = match rs256_key {
             RS256Key::Tpm { key_context } => key_context.clone(),
@@ -1189,6 +1236,7 @@ impl TpmRS256 for TssTpm {
         RS256PublicKey::new(n, e_u32.into()).map_err(|_| TpmError::TssRsaPublicFromComponents)
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_sign(
         &mut self,
         rs256_key: &RS256Key,
@@ -1248,6 +1296,7 @@ impl TpmRS256 for TssTpm {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_dec(
         &mut self,
         rs256_key: &RS256Key,
@@ -1283,6 +1332,7 @@ impl TpmRS256 for TssTpm {
         )
     }
 
+    #[instrument(level = "debug", skip_all)]
     fn rs256_import(
         &mut self,
         _parent_key: &StorageKey,
@@ -1293,6 +1343,7 @@ impl TpmRS256 for TssTpm {
 }
 
 impl TpmMsExtensions for TssTpm {
+    #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_dec_sha1(
         &mut self,
         rs256_key: &RS256Key,
@@ -1332,39 +1383,44 @@ impl TpmMsExtensions for TssTpm {
 #[cfg(test)]
 mod tests {
     use super::TssTpm;
+    use std::sync::LazyLock;
+    use std::sync::Mutex;
+
+    static TPM_LOCK: LazyLock<Mutex<TssTpm>> = LazyLock::new(|| {
+        let tss_tpm =
+            TssTpm::new(&std::env::var("TEST_TCTI").unwrap_or("device:/dev/tpmrm0".into()))
+                .unwrap();
+
+        Mutex::new(tss_tpm)
+    });
 
     #[test]
     fn tss_tpm_storage() {
-        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
-
-        crate::tests::test_tpm_storage(tss_tpm);
+        let mut tss_tpm = TPM_LOCK.lock().unwrap();
+        crate::tests::test_tpm_storage(&mut *tss_tpm);
     }
 
     #[test]
     fn tss_tpm_hmac() {
-        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
-
-        crate::tests::test_tpm_hmac(tss_tpm);
+        let mut tss_tpm = TPM_LOCK.lock().unwrap();
+        crate::tests::test_tpm_hmac(&mut *tss_tpm);
     }
 
     #[test]
     fn tss_tpm_ecdsa_p256() {
-        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
-
-        crate::tests::test_tpm_ecdsa_p256(tss_tpm);
+        let mut tss_tpm = TPM_LOCK.lock().unwrap();
+        crate::tests::test_tpm_ecdsa_p256(&mut *tss_tpm);
     }
 
     #[test]
     fn tss_tpm_rs256() {
-        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
-
-        crate::tests::test_tpm_rs256(tss_tpm);
+        let mut tss_tpm = TPM_LOCK.lock().unwrap();
+        crate::tests::test_tpm_rs256(&mut *tss_tpm);
     }
 
     #[test]
     fn tss_tpm_msoapxbc() {
-        let tss_tpm = TssTpm::new("device:/dev/tpmrm0").unwrap();
-
-        crate::tests::test_tpm_msoapxbc(tss_tpm);
+        let mut tss_tpm = TPM_LOCK.lock().unwrap();
+        crate::tests::test_tpm_msoapxbc(&mut *tss_tpm);
     }
 }
