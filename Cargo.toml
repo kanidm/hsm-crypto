@@ -28,7 +28,7 @@ tss-esapi-sys = { version = "0.5.0", optional = true, features = [
 tss-esapi = { version = "=8.0.0-alpha", optional = true }
 
 [dev-dependencies]
-tracing-subscriber = "^0.3.17"
+tracing-subscriber = { version = "^0.3.17", features = ["env-filter"] }
 
 [profile.dev.package.num-bigint-dig]
 opt-level = 3
