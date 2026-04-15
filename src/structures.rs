@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tss_esapi::structures as tpm;
 
 #[cfg(feature = "tpm")]
-use tss_esapi::utils::TpmsContext;
+use tss_esapi::structures::SavedTpmContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LoadableStorageKey {
@@ -51,7 +51,7 @@ pub enum StorageKey {
     },
     #[cfg(feature = "tpm")]
     Tpm {
-        key_context: TpmsContext,
+        key_context: SavedTpmContext,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
@@ -89,7 +89,7 @@ pub enum HmacS256Key {
     },
     #[cfg(feature = "tpm")]
     Tpm {
-        key_context: TpmsContext,
+        key_context: SavedTpmContext,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
@@ -120,7 +120,7 @@ pub enum ES256Key {
     },
     #[cfg(feature = "tpm")]
     Tpm {
-        key_context: TpmsContext,
+        key_context: SavedTpmContext,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
@@ -167,7 +167,7 @@ pub enum RS256Key {
     },
     #[cfg(feature = "tpm")]
     Tpm {
-        key_context: TpmsContext,
+        key_context: SavedTpmContext,
     },
     #[cfg(not(feature = "tpm"))]
     Tpm {
