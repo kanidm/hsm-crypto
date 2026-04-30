@@ -17,8 +17,9 @@ use tss_esapi::handles::ObjectHandle;
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 use tss_esapi::interface_types::ecc::EccCurve;
 use tss_esapi::interface_types::key_bits::RsaKeyBits;
-use tss_esapi::interface_types::resource_handles::Hierarchy;
+use tss_esapi::interface_types::reserved_handles::Hierarchy;
 use tss_esapi::interface_types::session_handles::AuthSession;
+use tss_esapi::structures::SavedTpmContext;
 use tss_esapi::structures::{Auth, Private, Public};
 use tss_esapi::structures::{
     CreateKeyResult, CreatePrimaryKeyResult, Data, Digest, EccPoint, EccScheme, HashScheme,
@@ -28,7 +29,6 @@ use tss_esapi::structures::{
     SymmetricDefinition, SymmetricDefinitionObject,
 };
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
-use tss_esapi::utils::TpmsContext;
 use tss_esapi::Context;
 use tss_esapi::TctiNameConf;
 
@@ -236,7 +236,7 @@ impl TssTpm {
 
     fn execute_with_temporary_object_context<F, T>(
         &mut self,
-        tpms_context: TpmsContext,
+        tpms_context: SavedTpmContext,
         f: F,
     ) -> Result<T, TpmError>
     where
@@ -265,10 +265,10 @@ impl TssTpm {
 
     fn execute_key_load_to_context(
         &mut self,
-        parent_context: TpmsContext,
+        parent_context: SavedTpmContext,
         private: Private,
         public: Public,
-    ) -> Result<TpmsContext, TpmError> {
+    ) -> Result<SavedTpmContext, TpmError> {
         // Load our private/public under our parent context, and immediately
         // flush the parent handle from the context.
         let key_handle = self.execute_with_temporary_object_context(
