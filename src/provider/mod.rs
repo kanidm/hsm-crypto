@@ -269,8 +269,8 @@ pub trait TpmRS256: Tpm {
     #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_enc(&mut self, rs256_key: &RS256Key, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
-        let padding = rsa::Oaep::new::<s256::Sha256>();
-        let mut rng = rand::thread_rng();
+        let padding = rsa::Oaep::<s256::Sha256>::new();
+        let mut rng = rand::rng();
 
         public_key
             .encrypt(&mut rng, padding, data)
@@ -394,8 +394,8 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         input: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
-        let padding = rsa::Oaep::new::<sha1::Sha1>();
-        let mut rng = rand::thread_rng();
+        let padding = rsa::Oaep::<sha1::Sha1>::new();
+        let mut rng = rand::rng();
 
         public_key
             .encrypt(&mut rng, padding, input)

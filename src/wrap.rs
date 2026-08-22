@@ -10,7 +10,7 @@ macro_rules! wrap_aes256gcm {
         let mut enc_key = $key_to_wrap.clone();
 
         let tag = cipher
-            .encrypt_in_place_detached(&nonce, associated_data, enc_key.as_mut_slice())
+            .encrypt_inout_detached(&nonce, associated_data, enc_key.as_mut_slice().into())
             .map_err(|_| TpmError::Aes256GcmEncrypt)?;
 
         if enc_key.as_slice() == $key_to_wrap.as_slice() {
@@ -38,7 +38,7 @@ macro_rules! unwrap_aes256gcm {
         let associated_data = b"";
 
         cipher
-            .decrypt_in_place_detached($nonce, associated_data, key.as_mut_slice(), $tag)
+            .decrypt_inout_detached($nonce, associated_data, key.as_mut_slice().into(), $tag)
             .map_err(|_| TpmError::Aes256GcmDecrypt)?;
 
         if key.as_slice() == $key_to_unwrap.as_slice() {
@@ -63,13 +63,15 @@ macro_rules! unwrap_aes256gcm_nonce16 {
 
         let mut key = $key_to_unwrap.clone();
 
-        let iv = Aes256GcmNonce16::from_slice($nonce);
-        let tag = Aes256GcmTag::from_slice($tag);
+        let iv = Aes256GcmNonce16::try_from($nonce.clone())
+            .map_err(|_err| TpmError::Aes256GcmDecrypt)?;
+        let tag =
+            Aes256GcmTag::try_from($tag.clone()).map_err(|_err| TpmError::Aes256GcmDecrypt)?;
 
         let associated_data = b"";
 
         cipher
-            .decrypt_in_place_detached(iv, associated_data, key.as_mut_slice(), tag)
+            .decrypt_inout_detached(&iv, associated_data, key.as_mut_slice().into(), &tag)
             .map_err(|_| TpmError::Aes256GcmDecrypt)?;
 
         if key.as_slice() == $key_to_unwrap.as_slice() {
