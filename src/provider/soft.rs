@@ -10,7 +10,7 @@ use crate::wrap::{unwrap_aes256gcm, unwrap_aes256gcm_nonce16, wrap_aes256gcm};
 use crypto_glue::{
     aes256::{self},
     aes256gcm::{
-        self, AeadInPlace, Aes256Gcm, Aes256GcmN16, Aes256GcmNonce16, Aes256GcmTag, KeyInit,
+        self, AeadInOut, Aes256Gcm, Aes256GcmN16, Aes256GcmNonce16, Aes256GcmTag, KeyInit,
     },
     ecdsa_p256::{
         self, EcdsaP256Digest, EcdsaP256PrivateKey, EcdsaP256PublicKey, EcdsaP256Signature,
@@ -82,9 +82,7 @@ impl Tpm for SoftTpm {
                     iv,
                 },
             ) => unwrap_aes256gcm_nonce16!(auth_key, key_to_unwrap, tag, iv)
-                .and_then(|key| {
-                    aes256::key_from_vec(key.to_vec()).ok_or(TpmError::Aes256KeyInvalid)
-                })
+                .and_then(|key| aes256::key_from_slice(&key).ok_or(TpmError::Aes256KeyInvalid))
                 .map(|key| StorageKey::SoftAes256GcmV2 { key }),
             (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) => Err(TpmError::IncorrectKeyType),
         }
@@ -136,9 +134,7 @@ impl Tpm for SoftTpm {
                     iv,
                 },
             ) => unwrap_aes256gcm_nonce16!(parent_key, key_to_unwrap, tag, iv)
-                .and_then(|key| {
-                    aes256::key_from_vec(key.to_vec()).ok_or(TpmError::Aes256KeyInvalid)
-                })
+                .and_then(|key| aes256::key_from_slice(&key).ok_or(TpmError::Aes256KeyInvalid))
                 .map(|key| StorageKey::SoftAes256GcmV2 { key }),
             (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) | (StorageKey::Tpm { .. }, _) => {
                 Err(TpmError::IncorrectKeyType)
@@ -200,9 +196,7 @@ impl Tpm for SoftTpm {
             ) => {
                 let wrapping_key = pin.derive_aes_256(parent_key)?;
                 unwrap_aes256gcm_nonce16!(&wrapping_key, key_to_unwrap, tag, iv)
-                    .and_then(|key| {
-                        aes256::key_from_vec(key.to_vec()).ok_or(TpmError::Aes256KeyInvalid)
-                    })
+                    .and_then(|key| aes256::key_from_slice(&key).ok_or(TpmError::Aes256KeyInvalid))
                     .map(|key| StorageKey::SoftAes256GcmV2 { key })
             }
             (_, LoadableStorageKey::TpmAes128CfbV1 { .. }) | (StorageKey::Tpm { .. }, _) => {
@@ -397,12 +391,12 @@ impl TpmES256 for SoftTpm {
     ) -> Result<EcdsaP256Signature, TpmError> {
         match es256_key {
             ES256Key::SoftAes256GcmV2 { key } => {
-                let mut digest = EcdsaP256Digest::new();
-                digest.update(data);
-
                 let signer = EcdsaP256SigningKey::from(key);
                 signer
-                    .try_sign_digest(digest)
+                    .try_sign_digest(|digest: &mut EcdsaP256Digest| {
+                        digest.update(data);
+                        Ok(())
+                    })
                     .map_err(|_| TpmError::EcdsaSignature)
             }
             ES256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
@@ -464,13 +458,13 @@ impl TpmRS256 for SoftTpm {
                     },
                 )?;
 
-                let padding = rsa::Oaep::new::<sha1::Sha1>();
+                let padding = rsa::Oaep::<sha1::Sha1>::new();
                 let cek_vec = key
                     .decrypt(padding, cek)
                     .map_err(|_| TpmError::RsaOaepDecrypt)?;
 
                 let content_encryption_key =
-                    aes256::key_from_vec(cek_vec).ok_or(TpmError::Aes256KeyInvalid)?;
+                    aes256::key_from_slice(&cek_vec).ok_or(TpmError::Aes256KeyInvalid)?;
 
                 let key = Box::new(key);
 
@@ -524,13 +518,13 @@ impl TpmRS256 for SoftTpm {
     ) -> Result<RS256Signature, TpmError> {
         match rs256_key {
             RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
-                let mut digest = RS256Digest::new();
-                digest.update(data);
-
                 let signer = RS256SigningKey::new(key.as_ref().clone());
 
                 signer
-                    .try_sign_digest(digest)
+                    .try_sign_digest(|digest: &mut RS256Digest| {
+                        digest.update(data);
+                        Ok(())
+                    })
                     .map_err(|_| TpmError::RsaPkcs115Sign)
             }
             RS256Key::Tpm { .. } => Err(TpmError::IncorrectKeyType),
@@ -545,7 +539,7 @@ impl TpmRS256 for SoftTpm {
     ) -> Result<Vec<u8>, TpmError> {
         match rs256_key {
             RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
-                let padding = rsa::Oaep::new::<s256::Sha256>();
+                let padding = rsa::Oaep::<s256::Sha256>::new();
                 key.decrypt(padding, encrypted_data)
                     .map_err(|_| TpmError::RsaOaepDecrypt)
             }
@@ -589,7 +583,7 @@ impl TpmMsExtensions for SoftTpm {
     ) -> Result<Zeroizing<Vec<u8>>, TpmError> {
         match rs256_key {
             RS256Key::SoftAes256GcmV2Cek { key, .. } | RS256Key::SoftAes256GcmV2 { key } => {
-                let padding = rsa::Oaep::new::<sha1::Sha1>();
+                let padding = rsa::Oaep::<sha1::Sha1>::new();
                 key.decrypt(padding, encrypted_data)
                     .map(|data| data.into())
                     .map_err(|_| TpmError::RsaOaepDecrypt)

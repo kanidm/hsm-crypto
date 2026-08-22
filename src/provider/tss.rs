@@ -9,10 +9,12 @@ use crate::structures::{
 use std::str::FromStr;
 use tracing::instrument;
 use tracing::{error, trace};
+use tss_esapi::Context;
+use tss_esapi::TctiNameConf;
 use tss_esapi::attributes::{ObjectAttributesBuilder, SessionAttributesBuilder};
+use tss_esapi::constants::SessionType;
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::tss::TPM2_ST_HASHCHECK;
-use tss_esapi::constants::SessionType;
 use tss_esapi::handles::ObjectHandle;
 use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 use tss_esapi::interface_types::ecc::EccCurve;
@@ -29,20 +31,17 @@ use tss_esapi::structures::{
     SymmetricDefinition, SymmetricDefinitionObject,
 };
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
-use tss_esapi::Context;
-use tss_esapi::TctiNameConf;
 
 use crypto_glue::{
     aes256,
-    aes256gcm::{self, AeadInPlace, Aes256Gcm, KeyInit},
+    aes256gcm::{self, Aes256Gcm, KeyInit},
     ecdsa_p256::{
-        EcdsaP256PublicCoordinate, EcdsaP256PublicEncodedPoint, EcdsaP256PublicKey,
-        EcdsaP256Signature,
+        EcdsaP256PublicCoordinate, EcdsaP256PublicKey, EcdsaP256PublicSec1Point, EcdsaP256Signature,
     },
     hmac_s256::HmacSha256Output,
     rsa::{self, RS256PrivateKey, RS256PublicKey, RS256Signature},
     s256::{Sha256, Sha256Output},
-    traits::{Digest as TraitDigest, FromEncodedPoint, Zeroizing},
+    traits::{AeadInOut, Digest as TraitDigest, FromSec1Point, Zeroizing},
 };
 
 use crate::wrap::{unwrap_aes256gcm, wrap_aes256gcm};
@@ -771,7 +770,7 @@ impl Tpm for TssTpm {
         )?;
 
         let content_encryption_key =
-            aes256::key_from_vec(unsealed_key).ok_or(TpmError::Aes256KeyInvalid)?;
+            aes256::key_from_slice(&unsealed_key).ok_or(TpmError::Aes256KeyInvalid)?;
 
         unwrap_aes256gcm!(&content_encryption_key, data, tag, nonce)
     }
@@ -898,8 +897,8 @@ impl TpmHmacS256 for TssTpm {
             },
         )?;
 
-        let hmac_output = Sha256Output::from_exact_iter(digest.into_iter())
-            .ok_or(TpmError::TssHmacOutputInvalid)?;
+        let hmac_output = Sha256Output::try_from_iter(digest.into_iter())
+            .map_err(|_err| TpmError::TssHmacOutputInvalid)?;
 
         Ok(HmacSha256Output::from(hmac_output))
     }
@@ -1014,16 +1013,18 @@ impl TpmES256 for TssTpm {
             return Err(TpmError::IncorrectKeyType);
         };
 
-        let x = EcdsaP256PublicCoordinate::from_exact_iter(unique.x().as_slice().iter().copied());
-        let y = EcdsaP256PublicCoordinate::from_exact_iter(unique.y().as_slice().iter().copied());
+        let x =
+            EcdsaP256PublicCoordinate::try_from_iter(unique.x().as_slice().iter().copied()).ok();
+        let y =
+            EcdsaP256PublicCoordinate::try_from_iter(unique.y().as_slice().iter().copied()).ok();
 
         let (Some(x), Some(y)) = (x, y) else {
             return Err(TpmError::TssEs256PublicCoordinatesInvalid);
         };
 
-        let encoded_point = EcdsaP256PublicEncodedPoint::from_affine_coordinates(&x, &y, false);
+        let encoded_point = EcdsaP256PublicSec1Point::from_affine_coordinates(&x, &y, false);
 
-        let maybe_pk = EcdsaP256PublicKey::from_encoded_point(&encoded_point);
+        let maybe_pk = EcdsaP256PublicKey::from_sec1_point(&encoded_point);
 
         if maybe_pk.is_some().into() {
             Ok(maybe_pk.unwrap())
@@ -1085,12 +1086,14 @@ impl TpmES256 for TssTpm {
 
         match signature {
             Signature::EcDsa(ecsig) => {
-                let s = EcdsaP256PublicCoordinate::from_exact_iter(
+                let s = EcdsaP256PublicCoordinate::try_from_iter(
                     ecsig.signature_s().as_slice().iter().copied(),
-                );
-                let r = EcdsaP256PublicCoordinate::from_exact_iter(
+                )
+                .ok();
+                let r = EcdsaP256PublicCoordinate::try_from_iter(
                     ecsig.signature_r().as_slice().iter().copied(),
-                );
+                )
+                .ok();
 
                 let (Some(s), Some(r)) = (s, r) else {
                     return Err(TpmError::TssEs256SignatureCoordinatesInvalid);
@@ -1224,7 +1227,7 @@ impl TpmRS256 for TssTpm {
         };
 
         // This is a big endian signed value as expected
-        let n = rsa::BigUint::from_bytes_be(unique.as_slice());
+        let n = rsa::BigUint::from_be_slice_vartime(unique.as_slice());
 
         // Gotcha https://docs.rs/tss-esapi/latest/src/tss_esapi/abstraction/public.rs.html#81
         // If value == 0, set default of 65537

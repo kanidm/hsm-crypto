@@ -1,13 +1,13 @@
 [package]
 name = "kanidm-hsm-crypto"
 description = "A library for easily interacting with a HSM or TPM"
-version = "0.3.6"
-edition = "2021"
+version = "0.4.0"
+edition = "2024"
 license = "MPL-2.0"
 homepage = "https://github.com/kanidm/hsm-crypto/"
 repository = "https://github.com/kanidm/hsm-crypto/"
 authors = ["William Brown <william@blackhats.net.au>"]
-rust-version = "1.79"
+rust-version = "1.85"
 
 [features]
 # default = ["tpm"]
@@ -19,7 +19,7 @@ tpm = ["dep:tss-esapi", "dep:tss-esapi-sys"]
 # crypto-glue = { path = "../crypto-glue" }
 
 [dependencies]
-crypto-glue = "^0.1.6"
+crypto-glue = "^0.2.0"
 serde = { version = "^1.0", features = ["derive"] }
 tracing = "^0.1.37"
 tss-esapi-sys = { version = "0.6.0", optional = true, features = [
@@ -32,5 +32,3 @@ tss-esapi = { version = "8.0.0-alpha.2", optional = true, features = [
 [dev-dependencies]
 tracing-subscriber = { version = "^0.3.17", features = ["env-filter"] }
 
-[profile.dev.package.num-bigint-dig]
-opt-level = 3

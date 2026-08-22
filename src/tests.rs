@@ -6,13 +6,14 @@ use crypto_glue::ecdsa_p256::EcdsaP256PublicKey;
 use crypto_glue::ecdsa_p256::EcdsaP256Signature;
 use crypto_glue::ecdsa_p256::EcdsaP256VerifyingKey;
 use crypto_glue::rsa::{RS256PublicKey, RS256Signature, RS256VerifyingKey};
-use crypto_glue::spki::der::referenced::OwnedToRef;
-use crypto_glue::spki::der::Encode;
 use crypto_glue::spki::DynSignatureAlgorithmIdentifier;
+use crypto_glue::spki::der::Encode;
+use crypto_glue::spki::der::referenced::OwnedToRef;
 use crypto_glue::traits::*;
 use crypto_glue::x509;
 use crypto_glue::x509::Builder;
 use crypto_glue::x509::X509Display;
+use crypto_glue::x509::profile::cabf::tls::*;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tracing::trace;
@@ -197,57 +198,68 @@ pub(crate) fn test_tpm_ecdsa_p256<T: Tpm + TpmES256>(tpm_a: &mut T) {
         // Test making a self-signed certificate. This generally implies and satisfies
         // the requirements for a CSR builder too.
 
-        let profile = x509::Profile::Manual { issuer: None };
-        let serial_number = x509::SerialNumber::from(1u32);
-
-        let now = SystemTime::now();
-        let not_before = x509::Time::try_from(now).unwrap();
-        let not_after = x509::Time::try_from(now + Duration::new(3600, 0)).unwrap();
-
-        let validity = x509::Validity {
-            not_after,
-            not_before,
-        };
-
-        let subject = x509::Name::from_str("CN=selfsigned").unwrap();
-
         let signing_key = tpm_a
             .es256_keypair(&es256_key)
             .expect("Unable to access es256 signing pair");
 
         let verifier = signing_key.verifying_key();
 
-        let subject_public_key_info =
-            x509::SubjectPublicKeyInfoOwned::from_key(signing_key.verifying_key()).unwrap();
+        let subject = x509::Name::from_str("CN=selfsigned").unwrap();
+
+        let alt_name =
+            x509::Ia5String::new("localhost").expect("static server DNS SAN should be valid");
+
+        let names = vec![x509::GeneralName::DnsName(alt_name)];
+
+        let certificate_type =
+            CertificateType::domain_validated(subject.clone(), names.clone()).unwrap();
+
+        let profile = Subscriber {
+            certificate_type,
+            issuer: subject,
+            client_auth: false,
+            tls12_options: Default::default(),
+            enable_data_encipherment: Default::default(),
+        };
+
+        let serial_number = x509::SerialNumber::from(1u32);
+
+        let now = SystemTime::now();
+        let not_before = x509::Time::try_from(now).unwrap();
+        let not_after = x509::Time::try_from(now + Duration::new(3600, 0)).unwrap();
+
+        let validity = x509::Validity::new(not_before, not_after);
+
+        let subject_public_key_info = x509::SubjectPublicKeyInfoOwned::from_key(&verifier).unwrap();
 
         let mut cert_builder = x509::CertificateBuilder::new(
             profile,
             serial_number,
             validity,
-            subject,
             subject_public_key_info,
-            &signing_key,
         )
         .unwrap();
 
-        let csr_to_sign = cert_builder.finalize().unwrap();
+        let csr_to_sign = cert_builder.finalize(&signing_key).unwrap();
 
         let signature = tpm_a
             .es256_sign_to_bitstring(&es256_key, &csr_to_sign)
             .expect("Unable to sign csr with es256 private key");
 
-        let cert = cert_builder.assemble(signature).unwrap();
+        let cert = cert_builder.assemble(signature, &signing_key).unwrap();
 
         println!("{}", X509Display::from(&cert));
 
         // Check the public keys are the same. Fuck me the rust crypto apis don't
         // make this easy at all .....
         assert_eq!(
-            cert.signature_algorithm,
+            *cert.signature_algorithm(),
             verifier.signature_algorithm_identifier().unwrap()
         );
         let cert_pub_key = EcdsaP256PublicKey::try_from(
-            cert.tbs_certificate.subject_public_key_info.owned_to_ref(),
+            cert.tbs_certificate()
+                .subject_public_key_info()
+                .owned_to_ref(),
         )
         .unwrap();
 
@@ -257,16 +269,18 @@ pub(crate) fn test_tpm_ecdsa_p256<T: Tpm + TpmES256>(tpm_a: &mut T) {
         // As pub_key and cert_pub_key are the same, we can reuse the verifier from before.
 
         let cert_signature = cert
-            .signature
+            .signature()
             .as_bytes()
             .and_then(|bytes| EcdsaP256Signature::from_slice(bytes).ok())
             .unwrap();
 
-        let cert_data_to_validate = cert.tbs_certificate.to_der().unwrap();
+        let cert_data_to_validate = cert.tbs_certificate().to_der().unwrap();
 
-        assert!(verifier
-            .verify(&cert_data_to_validate, &cert_signature)
-            .is_ok());
+        assert!(
+            verifier
+                .verify(&cert_data_to_validate, &cert_signature)
+                .is_ok()
+        );
     }
 }
 
@@ -327,58 +341,70 @@ pub(crate) fn test_tpm_rs256<T: Tpm + TpmRS256>(tpm_a: &mut T) {
         // Test making a self-signed certificate. This generally implies and satisfies
         // the requirements for a CSR builder too.
 
-        let profile = x509::Profile::Manual { issuer: None };
-        let serial_number = x509::SerialNumber::from(1u32);
-
-        let now = SystemTime::now();
-        let not_before = x509::Time::try_from(now).unwrap();
-        let not_after = x509::Time::try_from(now + Duration::new(3600, 0)).unwrap();
-
-        let validity = x509::Validity {
-            not_after,
-            not_before,
-        };
-
-        let subject = x509::Name::from_str("CN=selfsigned").unwrap();
-
         let signing_key = tpm_a
             .rs256_keypair(&rs256_key)
             .expect("Unable to access rs256 signing pair");
 
         let verifier = signing_key.verifying_key();
 
-        let subject_public_key_info =
-            x509::SubjectPublicKeyInfoOwned::from_key(signing_key.verifying_key()).unwrap();
+        let subject = x509::Name::from_str("CN=selfsigned").unwrap();
+
+        let alt_name =
+            x509::Ia5String::new("localhost").expect("static server DNS SAN should be valid");
+
+        let names = vec![x509::GeneralName::DnsName(alt_name)];
+
+        let certificate_type =
+            CertificateType::domain_validated(subject.clone(), names.clone()).unwrap();
+
+        let profile = Subscriber {
+            certificate_type,
+            issuer: subject,
+            client_auth: false,
+            tls12_options: Default::default(),
+            enable_data_encipherment: Default::default(),
+        };
+
+        let serial_number = x509::SerialNumber::from(1u32);
+
+        let now = SystemTime::now();
+        let not_before = x509::Time::try_from(now).unwrap();
+        let not_after = x509::Time::try_from(now + Duration::new(3600, 0)).unwrap();
+
+        let validity = x509::Validity::new(not_before, not_after);
+
+        let subject_public_key_info = x509::SubjectPublicKeyInfoOwned::from_key(&verifier).unwrap();
 
         let mut cert_builder = x509::CertificateBuilder::new(
             profile,
             serial_number,
             validity,
-            subject,
             subject_public_key_info,
-            &signing_key,
         )
         .unwrap();
 
-        let csr_to_sign = cert_builder.finalize().unwrap();
+        let csr_to_sign = cert_builder.finalize(&signing_key).unwrap();
 
         let signature = tpm_a
             .rs256_sign_to_bitstring(&rs256_key, &csr_to_sign)
             .expect("Unable to sign csr with rs256 private key");
 
-        let cert = cert_builder.assemble(signature).unwrap();
+        let cert = cert_builder.assemble(signature, &signing_key).unwrap();
 
         println!("{}", X509Display::from(&cert));
 
         // Check the public keys are the same. Fuck me the rust crypto apis don't
         // make this easy at all .....
         assert_eq!(
-            cert.signature_algorithm,
+            *cert.signature_algorithm(),
             verifier.signature_algorithm_identifier().unwrap()
         );
-        let cert_pub_key =
-            RS256PublicKey::try_from(cert.tbs_certificate.subject_public_key_info.owned_to_ref())
-                .unwrap();
+        let cert_pub_key = RS256PublicKey::try_from(
+            cert.tbs_certificate()
+                .subject_public_key_info()
+                .owned_to_ref(),
+        )
+        .unwrap();
 
         assert_eq!(pub_key, cert_pub_key);
         let verifier = RS256VerifyingKey::new(pub_key);
@@ -386,16 +412,18 @@ pub(crate) fn test_tpm_rs256<T: Tpm + TpmRS256>(tpm_a: &mut T) {
         // As pub_key and cert_pub_key are the same, we can reuse the verifier from before.
 
         let cert_signature = cert
-            .signature
+            .signature()
             .as_bytes()
             .and_then(|bytes| RS256Signature::try_from(bytes).ok())
             .unwrap();
 
-        let cert_data_to_validate = cert.tbs_certificate.to_der().unwrap();
+        let cert_data_to_validate = cert.tbs_certificate().to_der().unwrap();
 
-        assert!(verifier
-            .verify(&cert_data_to_validate, &cert_signature)
-            .is_ok());
+        assert!(
+            verifier
+                .verify(&cert_data_to_validate, &cert_signature)
+                .is_ok()
+        );
     }
 }
 

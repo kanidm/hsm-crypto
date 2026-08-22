@@ -2,7 +2,7 @@ use crate::error::TpmError;
 use crypto_glue::{
     aes256::{self, Aes256Key},
     argon2, hex,
-    rand::{self, RngCore},
+    rand::{self, Rng},
     zeroize::Zeroizing,
 };
 use std::str::FromStr;
@@ -24,7 +24,7 @@ impl AuthValue {
     fn random_key() -> Result<Zeroizing<[u8; 24]>, TpmError> {
         let mut auth_key = Zeroizing::new([0; 24]);
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill_bytes(auth_key.as_mut());
 
         Ok(auth_key)

@@ -250,7 +250,7 @@ pub trait TpmRS256: Tpm {
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError>;
 
     fn rs256_sign(&mut self, rs256_key: &RS256Key, data: &[u8])
-        -> Result<RS256Signature, TpmError>;
+    -> Result<RS256Signature, TpmError>;
 
     fn rs256_import(
         &mut self,
@@ -269,8 +269,8 @@ pub trait TpmRS256: Tpm {
     #[instrument(level = "debug", skip_all)]
     fn rs256_oaep_enc(&mut self, rs256_key: &RS256Key, data: &[u8]) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
-        let padding = rsa::Oaep::new::<s256::Sha256>();
-        let mut rng = rand::thread_rng();
+        let padding = rsa::Oaep::<s256::Sha256>::new();
+        let mut rng = rand::rng();
 
         public_key
             .encrypt(&mut rng, padding, data)
@@ -394,8 +394,8 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
         input: &[u8],
     ) -> Result<Vec<u8>, TpmError> {
         let public_key = self.rs256_public(rs256_key)?;
-        let padding = rsa::Oaep::new::<sha1::Sha1>();
-        let mut rng = rand::thread_rng();
+        let padding = rsa::Oaep::<sha1::Sha1>::new();
+        let mut rng = rand::rng();
 
         public_key
             .encrypt(&mut rng, padding, input)
@@ -419,17 +419,17 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
 
         let signing_key = self.rs256_keypair(&rs256_key)?;
 
-        let mut req_builder = CertificateRequestBuilder::new(subject, &signing_key)
-            .map_err(|_| TpmError::X509RequestBuilder)?;
+        let mut req_builder =
+            CertificateRequestBuilder::new(subject).map_err(|_| TpmError::X509RequestBuilder)?;
 
         let csr_to_sign = req_builder
-            .finalize()
+            .finalize(&signing_key)
             .map_err(|_| TpmError::X509RequestSign)?;
 
         let signature = self.rs256_sign_to_bitstring(&rs256_key, &csr_to_sign)?;
 
         let cert_sign_req = req_builder
-            .assemble(signature)
+            .assemble(signature, &signing_key)
             .map_err(|_| TpmError::X509RequestAssemble)?;
 
         let in_progress_enrolment = MsInProgressEnrolment { loadable_rs256_key };
@@ -460,8 +460,8 @@ pub trait TpmMsExtensions: Tpm + TpmRS256 {
 
         let cert_pub_key = RS256PublicKey::try_from(
             certificate
-                .tbs_certificate
-                .subject_public_key_info
+                .tbs_certificate()
+                .subject_public_key_info()
                 .owned_to_ref(),
         )
         .map_err(|_| TpmError::X509PublicKey)?;
