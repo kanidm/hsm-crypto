@@ -464,7 +464,7 @@ impl TpmRS256 for SoftTpm {
                     .map_err(|_| TpmError::RsaOaepDecrypt)?;
 
                 let content_encryption_key =
-                    aes256::key_from_vec(cek_vec).ok_or(TpmError::Aes256KeyInvalid)?;
+                    aes256::key_from_slice(&cek_vec).ok_or(TpmError::Aes256KeyInvalid)?;
 
                 let key = Box::new(key);
 
