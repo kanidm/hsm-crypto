@@ -250,7 +250,7 @@ pub trait TpmRS256: Tpm {
     fn rs256_public(&mut self, rs256_key: &RS256Key) -> Result<RS256PublicKey, TpmError>;
 
     fn rs256_sign(&mut self, rs256_key: &RS256Key, data: &[u8])
-        -> Result<RS256Signature, TpmError>;
+    -> Result<RS256Signature, TpmError>;
 
     fn rs256_import(
         &mut self,

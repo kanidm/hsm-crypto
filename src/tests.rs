@@ -6,14 +6,14 @@ use crypto_glue::ecdsa_p256::EcdsaP256PublicKey;
 use crypto_glue::ecdsa_p256::EcdsaP256Signature;
 use crypto_glue::ecdsa_p256::EcdsaP256VerifyingKey;
 use crypto_glue::rsa::{RS256PublicKey, RS256Signature, RS256VerifyingKey};
-use crypto_glue::spki::der::referenced::OwnedToRef;
-use crypto_glue::spki::der::Encode;
 use crypto_glue::spki::DynSignatureAlgorithmIdentifier;
+use crypto_glue::spki::der::Encode;
+use crypto_glue::spki::der::referenced::OwnedToRef;
 use crypto_glue::traits::*;
 use crypto_glue::x509;
-use crypto_glue::x509::profile::cabf::tls::*;
 use crypto_glue::x509::Builder;
 use crypto_glue::x509::X509Display;
+use crypto_glue::x509::profile::cabf::tls::*;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tracing::trace;
@@ -276,9 +276,11 @@ pub(crate) fn test_tpm_ecdsa_p256<T: Tpm + TpmES256>(tpm_a: &mut T) {
 
         let cert_data_to_validate = cert.tbs_certificate().to_der().unwrap();
 
-        assert!(verifier
-            .verify(&cert_data_to_validate, &cert_signature)
-            .is_ok());
+        assert!(
+            verifier
+                .verify(&cert_data_to_validate, &cert_signature)
+                .is_ok()
+        );
     }
 }
 
@@ -417,9 +419,11 @@ pub(crate) fn test_tpm_rs256<T: Tpm + TpmRS256>(tpm_a: &mut T) {
 
         let cert_data_to_validate = cert.tbs_certificate().to_der().unwrap();
 
-        assert!(verifier
-            .verify(&cert_data_to_validate, &cert_signature)
-            .is_ok());
+        assert!(
+            verifier
+                .verify(&cert_data_to_validate, &cert_signature)
+                .is_ok()
+        );
     }
 }
 
